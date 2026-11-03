@@ -1,0 +1,15 @@
+<resources>
+    <!--
+        A1 阶段用平台主题，不引入 Material 组件依赖；A3 起由 Compose Material3 主题接管。
+
+        windowBackground 必须是纯白：平台默认是 #FAFAFA，与 Compose 侧 canvas(#FFFFFF)
+        不同，启动时会闪一下灰。深浅状态栏图标与白画布一致。
+        statusBarColor / navigationBarColor 不写——API 35+ 已忽略这两个属性，
+        写了只会误导后来者。
+    -->
+    <style name="Theme.Mimir" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFFFFFF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

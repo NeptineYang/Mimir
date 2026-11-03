@@ -1,0 +1,56 @@
+# 版本目录：所有版本集中管理。
+# 硬约束：Kotlin 版本必须与 AGP 内置版本一致（AGP 9.0.0 内置 Kotlin 2.2.10），
+# 因此这里不单独声明 kotlin 版本，也不 apply org.jetbrains.kotlin.android；
+# kotlin 版本号仅供 Compose 编译器插件与 serialization 插件复用。
+# KSP 版本同样被 AGP 9.0.0 的依赖锁定为 2.2.10-2.0.2，不可单独提升。
+[versions]
+agp = "9.1.1"
+kotlin = "2.2.10"
+ksp = "2.2.10-2.0.2"
+hilt = "2.60.1"
+activity = "1.13.0"
+composeBom = "2026.09.00"
+navigation = "2.10.2"
+room = "2.8.5"
+okhttp = "5.5.1"
+# serialization 1.12.0 由 Kotlin 2.4 编译，其 metadata 2.4.0 超出内置 Kotlin 2.2.10 的可读上限（2.3.0），
+# 因此对齐到 Kotlin 2.2 系列发布的 1.9.0。
+serialization = "1.9.0"
+shizuku = "13.1.5"
+# hilt-navigation-compose 提供 hiltViewModel()；1.4.0 的传递依赖会向上提升到
+# lifecycle 2.11.0 / navigation 2.10.2 / hilt 2.60.1，与现有版本无降级冲突。
+hiltNavigationCompose = "1.4.0"
+# 模型 API Key 的加密存储（设计文档 §4.6）。
+securityCrypto = "1.1.0"
+# 端侧 OCR（设计文档 §2.3.2）：纯视觉降级时用中文文本识别补出元素表。
+# bundled 版把中文模型打进 APK，不依赖设备上的 Play 服务下载。
+mlkitTextChinese = "16.0.0"
+
+[libraries]
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation" }
+androidx-hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
+hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }
+room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
+room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
+shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
+mlkit-text-chinese = { module = "com.google.mlkit:text-recognition-chinese", version.ref = "mlkitTextChinese" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }

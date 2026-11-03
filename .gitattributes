@@ -1,0 +1,8 @@
+# 统一换行符：源码在仓库内一律 LF，Windows 批处理保持 CRLF。
+# 目的：避免 gradlew（shell 脚本）在 Linux/macOS 上因 CRLF 无法执行。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.png binary
+*.webp binary
+*.apk binary

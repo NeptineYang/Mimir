@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    权限与组件清单（设计文档 §4.1 / §2.2）。
+
+    必须写进 manifest 的组件有四类：无障碍服务、输入法服务、前台服务（specialUse）、
+    Shizuku <provider>。后者 authority 由 Shizuku server 端按 "<applicationId>.shizuku"
+    拼接决定，改包名即断链，不能改名。
+
+    v1 明确不申请：Root、系统签名、悬浮窗（SYSTEM_ALERT_WINDOW）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 模型调用。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 人工交接与完成报告。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Agent 执行期保活；specialUse 需与下方 <property> 成对出现。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 枚举已装应用，把"打开美团"解析成包名。 -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+    <!-- 任务页的按住说话：录音交给系统语音识别服务，本应用不落盘、不外发。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- API 30+ 包可见性：不声明就查不到语音识别服务，isRecognitionAvailable 会误报为不可用。 -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".MimirApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Mimir"
+        android:usesCleartextTraffic="true">
+        <!--
+            usesCleartextTraffic：设计文档 §2.4 的"私域·局域网"档位指向用户 PC/NAS 上的
+            vLLM，通常只有 http。API Key 只会发往用户自己填的 base_url，不存在被第三方
+            明文截获的路径；云档应使用 https 地址。
+        -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 观测主通道：唯一能按 displayId 取窗口树的入口（§2.3、附录 A.5）。 -->
+        <service
+            android:name=".service.MimirAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- 自带输入法：commitText 提交任意 Unicode 文本，不依赖第三方键盘。 -->
+        <service
+            android:name=".service.MimirInputMethodService"
+            android:exported="true"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/input_method" />
+        </service>
+
+        <!-- Agent 执行期保活；specialUse 必须同时给出子类型说明。 -->
+        <service
+            android:name=".service.AgentForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="agent_execution" />
+        </service>
+
+        <!-- 交接通知的动作接收器：只转发「继续一次」「放弃」「我来处理」（§4.3）。 -->
+        <receiver
+            android:name=".service.HandoffReceiver"
+            android:exported="false" />
+
+        <!-- Shizuku：四属性必须齐全，authority 固定为 ${applicationId}.shizuku。 -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+
+</manifest>

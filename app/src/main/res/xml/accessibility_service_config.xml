@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    无障碍服务配置（设计文档 §2.2 / §2.3）。
+
+    flagRetrieveInteractiveWindows 是必需项：只有带这个标志，getWindowsOnAllDisplays()
+    才会返回可交互窗口；flagReportViewIds 让树里带上 viewIdResourceName（锚点 A1）。
+    canRetrieveWindowContent 必须为 true，否则拿不到节点文本。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100" />

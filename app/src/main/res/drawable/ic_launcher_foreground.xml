@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  功能：应用图标前景层——白色细线字母 M。
+  参数：无（矢量资源）。
+  返回：无。
+  说明：108×108 视口，笔画落在 66×66 安全区内，避免被各厂商的裁切形状切掉。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M32,76 L32,38 L54,62 L76,38 L76,76"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

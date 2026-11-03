@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">Mimir</string>
+
+    <!-- 无障碍说明必须写清"读的是副屏"，隐瞒式授权在评审上会直接被击穿（§3.3）。 -->
+    <string name="accessibility_service_description">读取副屏上目标 App 的控件文本，用于定位点击目标。不读取你主屏的内容。</string>
+
+    <string name="agent_channel_name">任务执行状态</string>
+    <string name="agent_running">Agent 正在执行任务</string>
+
+    <!-- 交接通知：不弹窗不震动，用户自己挑时间处理（§4.3）。 -->
+    <string name="handoff_channel_name">需要你处理</string>
+    <string name="handoff_channel_description">任务被闸门拦下时在这里提示；不会弹窗，也不会震动。</string>
+
+    <!-- 结果通知：任务结束后的完成/失败报告（§4.1）。 -->
+    <string name="result_channel_name">任务结果</string>
+    <string name="result_channel_description">任务完成、失败或放弃时在这里给出结果；不会弹窗，也不会震动。</string>
+</resources>

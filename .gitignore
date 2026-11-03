@@ -1,0 +1,36 @@
+# 项目内工具链
+.toolchain/
+.gradle-home/
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+release/
+
+# IDE
+.idea/
+*.iml
+*.hprof
+
+# Kotlin
+.kotlin/
+
+# 签名与密钥
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+
+# 临时产物
+*.zip
+*.log
+*.tmp
+
+
+大肥鱼作业.mp4

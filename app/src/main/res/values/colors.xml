@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用图标底色：Cohere 的近黑主色，与 ui/theme/MimirColor.kt 的 primary 同值。 -->
+    <color name="ic_launcher_background">#17171C</color>
+</resources>

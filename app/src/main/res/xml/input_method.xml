@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    自带输入法声明（设计文档 §2.2）。
+
+    声明中文键盘子类型只是为了通过 ime 子命令启用；实际不绘制键盘，
+    只通过 InputMethodService.commitText 提交文本。
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android">
+    <subtype
+        android:imeSubtypeMode="keyboard"
+        android:imeSubtypeLocale="zh_CN"
+        android:label="@string/app_name" />
+</input-method>
