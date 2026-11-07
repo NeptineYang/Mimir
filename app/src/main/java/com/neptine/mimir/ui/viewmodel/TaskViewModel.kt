@@ -1,26 +1,24 @@
 package com.neptine.mimir.ui.viewmodel
 
 import android.content.Context
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.neptine.mimir.agent.Orchestrator
-import com.neptine.mimir.agent.TaskSpecCodec
-import com.neptine.mimir.core.contract.CompletionContract
-import com.neptine.mimir.core.contract.TaskBudget
-import com.neptine.mimir.core.contract.TaskConstraints
-import com.neptine.mimir.core.contract.TaskSpec
+import com.neptine.mimir.agent.TaskLauncher
 import com.neptine.mimir.core.contract.TaskState
 import com.neptine.mimir.data.config.ModelConfigRepository
+import com.neptine.mimir.data.db.dao.AuditDao
 import com.neptine.mimir.data.db.dao.TaskDao
-import com.neptine.mimir.data.db.entity.TaskEntity
+import com.neptine.mimir.observation.AuditScreenshotStore
 import com.neptine.mimir.service.AgentForegroundService
 import com.neptine.mimir.ui.permission.PermissionReader
 import com.neptine.mimir.ui.permission.PermissionStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,18 +29,51 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 任务页输入框的字数上限。 */
+/**
+ * 任务页输入框的字数上限。
+ */
 private const val MAX_INPUT_LENGTH = 240
+
+/** Shizuku 授权请求码；与设置页同值，结果不影响本次请求的发起。 */
+private const val SHIZUKU_REQUEST_CODE = 4201
+
+/** 授权弹窗关闭后等多久再读一次状态（毫秒）。 */
+private const val SHIZUKU_REFRESH_DELAY_MS = 1_200L
+
+/** 任务卡缩略图的最大宽度（像素）；只用于几十 dp 的展示位。 */
+private const val THUMB_MAX_WIDTH = 220
+
+/**
+ * 引擎不能开工的原因，决定点击时该跳到哪一步。
+ */
+enum class EngineFix {
+    /** 没有待处理项。 */
+    NONE,
+
+    /** Shizuku 服务在跑但本应用未授权。 */
+    SHIZUKU_PERMISSION,
+
+    /** Shizuku 服务没运行，只能引导用户去启动它。 */
+    SHIZUKU_SERVICE,
+
+    /** 无障碍服务未开启。 */
+    ACCESSIBILITY,
+
+    /** 模型后端未配置。 */
+    MODEL,
+}
 
 /**
  * 引擎状态：能不能开工，以及卡在哪一项。
  *
  * @property online 三项前置条件都满足为 true
  * @property detail 给用户看的一句话说明
+ * @property fix 点击这一行时该做的修复动作
  */
 data class EngineStatus(
     val online: Boolean,
     val detail: String,
+    val fix: EngineFix = EngineFix.NONE,
 )
 
 /**
@@ -51,9 +82,12 @@ data class EngineStatus(
 @HiltViewModel
 class TaskViewModel @Inject constructor(
     private val taskDao: TaskDao,
+    private val auditDao: AuditDao,
+    private val auditShots: AuditScreenshotStore,
     private val permissions: PermissionReader,
     private val models: ModelConfigRepository,
     private val orchestrator: Orchestrator,
+    private val launcher: TaskLauncher,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -73,10 +107,17 @@ class TaskViewModel @Inject constructor(
      * 只查非终态：历史记录在历史页，首页只回答"现在有哪些任务还在跑或等人"。
      * 排序按"正在推进 > 等人处理 > 排队中"：有任务在跑时，它必须出现在最上面。
      * 首帧为 null，避免页面先闪一下"没有进行中任务"。
+     *
+     * 每条任务带上最近一步的动作后截图：文字进度说不清"它现在停在哪一页"，
+     * 一张缩略图能。缩略图按 220px 宽解码，不加载原图。
      */
     val activeTasks: StateFlow<List<TaskRow>?> = taskDao.observeActive()
         .map { tasks ->
-            tasks.map { it.toRow() }
+            tasks.map { task ->
+                val path = runCatching { auditDao.latestScreenshot(task.taskId) }.getOrNull()
+                val thumb = auditShots.loadThumb(path, THUMB_MAX_WIDTH)?.asImageBitmap()
+                task.toRow(thumb = thumb)
+            }
                 .sortedWith(compareBy({ statePriority(it.state) }, { it.createdAt }))
         }
         .flowOn(Dispatchers.Default)
@@ -96,14 +137,16 @@ class TaskViewModel @Inject constructor(
             val status = withContext(Dispatchers.IO) {
                 val permission = permissions.snapshot()
                 when {
-                    permission.shizuku != PermissionStatus.GRANTED ->
-                        EngineStatus(false, "Shizuku 未授权，去设置页处理")
+                    permission.shizuku == PermissionStatus.DENIED ->
+                        EngineStatus(false, "Shizuku 未授权，点这里授权", EngineFix.SHIZUKU_PERMISSION)
+                    permission.shizuku == PermissionStatus.UNAVAILABLE ->
+                        EngineStatus(false, "Shizuku 服务未运行，点这里去启动", EngineFix.SHIZUKU_SERVICE)
                     permission.accessibility != PermissionStatus.GRANTED ->
-                        EngineStatus(false, "无障碍服务未开启，去设置页处理")
+                        EngineStatus(false, "无障碍服务未开启，点这里去开启", EngineFix.ACCESSIBILITY)
                     else -> {
                         val model = models.resolve(ModelConfigRepository.ModelRole.EXECUTOR)
                         if (model == null) {
-                            EngineStatus(false, "未配置模型后端，去设置页填写")
+                            EngineStatus(false, "未配置模型后端，点这里去填写", EngineFix.MODEL)
                         } else {
                             EngineStatus(true, "已就绪：${model.model}")
                         }
@@ -111,6 +154,29 @@ class TaskViewModel @Inject constructor(
                 }
             }
             _status.value = status
+        }
+    }
+
+    /**
+     * 功能：按当前缺项发起修复
+     * 参数：无
+     * 返回：无
+     *
+     * 权限类缺项就地处理；模型未配置需要界面跳设置页，由调用方判断 [EngineFix.MODEL]。
+     * Shizuku 授权是系统弹窗，授予后等一小会儿再读一次状态，用户不必手动退出重进。
+     */
+    fun fixEngine() {
+        when (_status.value.fix) {
+            EngineFix.SHIZUKU_PERMISSION -> {
+                permissions.requestShizukuPermission(SHIZUKU_REQUEST_CODE)
+                viewModelScope.launch {
+                    delay(SHIZUKU_REFRESH_DELAY_MS)
+                    refreshStatus()
+                }
+            }
+            EngineFix.SHIZUKU_SERVICE -> permissions.openShizukuApp()
+            EngineFix.ACCESSIBILITY -> permissions.openAccessibilitySettings()
+            EngineFix.MODEL, EngineFix.NONE -> Unit
         }
     }
 
@@ -137,33 +203,10 @@ class TaskViewModel @Inject constructor(
         if (text.isEmpty()) {
             return
         }
-        val taskId = UUID.randomUUID().toString()
-        val now = System.currentTimeMillis()
-        val spec = buildSpec(taskId = taskId, inputText = text)
         viewModelScope.launch {
-            taskDao.upsert(
-                TaskEntity(
-                    taskId = taskId,
-                    taskType = spec.taskType,
-                    packageName = spec.packageName,
-                    inputText = text,
-                    specJson = TaskSpecCodec.encode(spec),
-                    state = TaskState.CREATED.name,
-                    currentSubGoal = null,
-                    stepCount = 0,
-                    displayGeneration = 0,
-                    lastObservationId = null,
-                    pendingIntentId = null,
-                    suspendReason = null,
-                    budgetStepsUsed = 0,
-                    budgetModelCalls = 0,
-                    createdAt = now,
-                    updatedAt = now,
-                    finishedAt = null,
-                ),
-            )
-            _input.value = ""
-            AgentForegroundService.start(context)
+            runCatching { launcher.launch(text) }
+                .onSuccess { _input.value = "" }
+                .onFailure { /* 落库失败时保留输入，用户可直接重试 */ }
         }
     }
 
@@ -191,27 +234,12 @@ class TaskViewModel @Inject constructor(
 
     /**
      * 功能：构造参数未解析的 TaskSpec 骨架
-     * 参数：taskId 任务标识；inputText 用户原始输入
-     * 返回：TaskSpec 实例
+     * 参数：无
+     * 返回：无
      *
-     * 参数与授权都留空是刻意的：设计文档要求"参数不完整必须等参数确定后请求当次确认"，
-     * 不能在解析前就凭空生成一次性授权。
+     * 创建逻辑已收敛到 [TaskLauncher]：手动任务与定时任务必须走同一入口，
+     * 否则两者的预算、授权与落库字段会慢慢分叉。
      */
-    private fun buildSpec(taskId: String, inputText: String): TaskSpec = TaskSpec(
-        taskId = taskId,
-        taskType = "",
-        packageName = "",
-        inputText = inputText,
-        parameters = emptyMap(),
-        constraints = TaskConstraints(),
-        riskGrants = emptyList(),
-        completionContract = CompletionContract(
-            successBoundary = "",
-            requiredFields = emptyList(),
-        ),
-        budget = TaskBudget(),
-    )
-
 }
 
 /**

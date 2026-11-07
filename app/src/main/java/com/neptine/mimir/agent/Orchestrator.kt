@@ -1,5 +1,6 @@
 package com.neptine.mimir.agent
 
+import android.os.SystemClock
 import android.util.Log
 import com.neptine.mimir.core.contract.ActionKind
 import com.neptine.mimir.core.contract.AgentAction
@@ -49,6 +50,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 任务编排器（设计文档 §1.3 主循环 / §1.4 状态机）。
@@ -195,6 +197,14 @@ class Orchestrator @Inject constructor(
                 scopeText = spec.completionContract.successBoundary.ifEmpty { DEFAULT_GRANT_SCOPE },
             )
         }
+        // 首次成功率要能区分"一次跑通"与"中途被人续过"：这条事件是唯一判据，
+        // 不新增任务列（续跑是过程事实，属于审计，不属于任务属性）。
+        audit.recordSystemEvent(
+            task = task,
+            outcome = "RESUMED",
+            result = "用户从挂起状态继续任务",
+            decision = "ALLOW",
+        )
         resume(taskId)
     }
 
@@ -219,6 +229,12 @@ class Orchestrator @Inject constructor(
             task = task,
             outcome = "HUMAN_RECONCILED",
             result = "用户确认已核对 $settled 条未决写入，恢复执行但不重放",
+            decision = "ALLOW",
+        )
+        audit.recordSystemEvent(
+            task = task,
+            outcome = "RESUMED",
+            result = "用户核对未决写入后继续任务",
             decision = "ALLOW",
         )
         resume(taskId)
@@ -359,7 +375,7 @@ class Orchestrator @Inject constructor(
         }
 
         val firstFrame = observeOrRecover(handle, spec, current)
-        val plan = buildPlan(spec, firstFrame)
+        val plan = buildPlan(spec, firstFrame, current)
         val cursor = PlanCursor.startOf(plan)
         current = persistPlan(current, plan, cursor)
 
@@ -450,7 +466,7 @@ class Orchestrator @Inject constructor(
             val firstFrame = observeOrRecover(opened, spec, current)
             // 续跑优先复用已落库的计划与游标：挂起可能只是等用户确认，重新规划会把进度推翻
             val restored = restorePlan(current)
-            val plan = restored ?: buildPlan(spec, firstFrame)
+            val plan = restored ?: buildPlan(spec, firstFrame, current)
             val cursor = restored?.let {
                 TaskPlanCodec.cursorOf(it, current.planVersion, current.planSubtaskIndex, current.planStepIndex)
             } ?: PlanCursor.startOf(plan)
@@ -564,7 +580,18 @@ class Orchestrator @Inject constructor(
         if (stored.packageName.isNotEmpty() && stored.taskType.isNotEmpty()) return stored
 
         val packages = runCatching { transport.packages.launchablePackages() }.getOrDefault(emptyList())
-        val resolved = planner.resolveSpec(task.inputText, task.taskId, packages)
+        val planned = planner.resolveSpec(
+            inputText = task.inputText,
+            taskId = task.taskId,
+            launchablePackages = packages,
+            autoApproveL2a = stored.autoApproveL2a,
+        )
+        planned.usage?.let { usage ->
+            audit.recordSystemEvent(
+                task, outcome = "MODEL_USAGE", result = "任务解析", decision = "ALLOW", usage = usage,
+            )
+        }
+        val resolved = planned.value
         check(resolved.packageName.isNotEmpty()) {
             "无法确定目标应用：请把要用的 App 名字写进任务（例如「打开设置查看关于手机」）"
         }
@@ -579,12 +606,21 @@ class Orchestrator @Inject constructor(
      * 退化而不是失败：规划器输出不可解析时，至少还能按"整句话当一步"继续执行，
      * 由动作后置条件与 Verifier 兜底，比直接判死更接近真实可用性。
      */
-    private suspend fun buildPlan(spec: TaskSpec, firstFrame: ObservationSnapshot): TaskPlan {
+    private suspend fun buildPlan(
+        spec: TaskSpec,
+        firstFrame: ObservationSnapshot,
+        task: TaskEntity,
+    ): TaskPlan {
         // 策略只在这里注入（§2.5.6）：它改变"做什么、按什么顺序"，不属于逐步 prompt
         val preferences = runCatching { memory.retrievePreferences(spec.packageName) }
             .getOrDefault(emptyList())
-        return runCatching { planner.planTask(spec, preferences, firstFrame) }
-            .getOrElse { fallbackPlan(spec) }
+        val planned = runCatching { planner.planTask(spec, preferences, firstFrame) }.getOrNull()
+        planned?.usage?.let { usage ->
+            audit.recordSystemEvent(
+                task, outcome = "MODEL_USAGE", result = "计划生成", decision = "ALLOW", usage = usage,
+            )
+        }
+        return planned?.value ?: fallbackPlan(spec)
     }
 
     /**
@@ -624,6 +660,9 @@ class Orchestrator @Inject constructor(
         var escapeRecoveries = 0
 
         while (true) {
+            // 计时从"这一轮开始"算起：预算检查、主屏冲突检查都算任务开销，
+            // 但不进 observe 段——否则 AVG(observe_ms) 会把前置检查算成观察成本。
+            val roundStartedAt = SystemClock.elapsedRealtime()
             budgetProblem(task, session.spec, stepIndex)?.let { return failTerminal(session, it) }
 
             // 用户在主屏打开同一个 App：购物车、草稿、订单等共享状态会被两边同时改动（§4.6 第 2 条）。
@@ -647,6 +686,7 @@ class Orchestrator @Inject constructor(
             }
 
             val snapshot = observeOrRecover(session.handle, session.spec, task)
+            val observedAt = SystemClock.elapsedRealtime()
             displayProblem(session, snapshot)?.let { reason ->
                 // 副屏被重建或观察来自别的屏：编号与坐标全部失效，不能继续注入
                 audit.recordSystemEvent(task, outcome = "DISPLAY_MISMATCH", result = reason)
@@ -747,17 +787,49 @@ class Orchestrator @Inject constructor(
                     memoryAssertion = memories.joinToString("；") { it.assertion },
                 )
             }
-            val decision = executor.decide(
-                ExecutorRequest(
-                    spec = session.spec,
-                    plan = session.plan,
-                    cursor = session.cursor,
-                    recentSteps = auditDao.recentSteps(task.taskId, HISTORY_LIMIT),
-                    snapshot = snapshot,
-                    memories = memories,
-                    credentials = credentials.availableFor(snapshot.packageName),
-                ),
-            )
+            // 单步超时只包住"决策"这一段：注入一旦开始就不能取消，取消会留下未知副作用。
+            // 取消点是 LlmClient 的异步调用——阻塞式 execute() 无法被 withTimeout 打断，
+            // 这也是本轮把客户端改成 enqueue 的原因。
+            val decided = withTimeoutOrNull(session.spec.budget.maxStepDurationMs) {
+                executor.decide(
+                    ExecutorRequest(
+                        spec = session.spec,
+                        plan = session.plan,
+                        cursor = session.cursor,
+                        recentSteps = auditDao.recentSteps(task.taskId, HISTORY_LIMIT),
+                        snapshot = snapshot,
+                        memories = memories,
+                        credentials = credentials.availableFor(snapshot.packageName),
+                    ),
+                )
+            }
+            val decidedAt = SystemClock.elapsedRealtime()
+            if (decided == null) {
+                // 请求可能已经到达后端，按一次调用计费：否则"超时"会成为绕开调用预算的口子
+                task = task.copy(budgetModelCalls = task.budgetModelCalls + 1)
+                session.task = task
+                session.stepTimeouts++
+                val reason = "单步决策超过 ${session.spec.budget.maxStepDurationMs / 1000} 秒，" +
+                    "已取消本次模型调用（连续第 ${session.stepTimeouts} 次）"
+                recordAudit(
+                    task.taskId, stepIndex + 1, snapshot,
+                    action = null, decision = null, verdict = null,
+                    outcome = "STEP_TIMEOUT", result = reason,
+                    decisionOverride = if (session.stepTimeouts >= MAX_STEP_TIMEOUTS) "NEED_HUMAN" else "ALLOW",
+                    timing = StepTiming(
+                        observeMs = observedAt - roundStartedAt,
+                        decideMs = decidedAt - observedAt,
+                        actMs = 0,
+                    ),
+                )
+                if (session.stepTimeouts >= MAX_STEP_TIMEOUTS) {
+                    notifier.notifyResumable(task.taskId, reason)
+                    return suspendForHuman(task, reason)
+                }
+                continue
+            }
+            val decision = decided
+            session.stepTimeouts = 0
             // 按实际尝试次数计费：解析失败重试也算一次模型调用
             task = task.copy(budgetModelCalls = task.budgetModelCalls + decision.attempts)
             // 立刻同步给会话：finish 分支会直接走验证，若不在这里同步，模型调用计数就丢了
@@ -809,12 +881,87 @@ class Orchestrator @Inject constructor(
                         notifier.notifyResumable(task.taskId, reason)
                         return suspendForHuman(task, reason)
                     }
-                    val outcome = handleAction(session, task, stepIndex, snapshot, stepLabel, action, decision)
+                    val outcome = handleAction(
+                        session, task, stepIndex, snapshot, stepLabel,
+                        coerceInputTarget(task, session, stepIndex, snapshot, action, decision),
+                        decision,
+                        observeMs = observedAt - roundStartedAt,
+                        decideMs = decidedAt - observedAt,
+                    )
                     stepIndex = outcome.stepIndex
                     task = outcome.task
                     session.task = task
                     when (outcome.kind) {
                         StepKind.CONTINUE -> {
+                            // 动作与完成声明合并（"边做边声明"）：这一下既是有效动作、又声称完成了本步。
+                            // 声明照样走 handleStepDone 的新帧复核，复核不过仍会驳回——省的是那次
+                            // 纯声明的视觉请求，不是这道核对。动作被拦下/作废时声明不成立，直接忽略。
+                            //
+                            // 页面零变化（NO_EFFECT）时也不能算完成：真机上出现过「TAP 点菜 → NO_EFFECT
+                            // → STEP_DONE 进入商家页面」，页面根本没变，等于把没做成记成做成了。
+                            if (action.stepDone && outcome.actionExecuted && outcome.effect == EffectOutcome.NO_EFFECT) {
+                                recordAudit(
+                                    task.taskId, stepIndex + 1, snapshot, action, decision, verdict = null,
+                                    outcome = "STEP_DONE_WEAK_REJECTED",
+                                    result = "这条动作没有改变页面（NO_EFFECT），不能据此认定步骤完成；" +
+                                        "请确认页面是否真的变了，或换一个动作",
+                                )
+                            } else if (action.stepDone && outcome.actionExecuted) {
+                                val done = handleStepDone(
+                                    session = session,
+                                    task = task,
+                                    stepIndex = stepIndex,
+                                    snapshot = snapshot,
+                                    step = step,
+                                    action = AgentAction.StepDone(
+                                        observationId = snapshot.observationId,
+                                        summary = action.stepSummary.orEmpty(),
+                                    ),
+                                    // 同一次模型调用已经在那条动作审计上记过用量，
+                                    // 这条合并出来的 STEP_DONE 不能再记一次，否则成本被算两遍。
+                                    decision = decision.copy(usage = null),
+                                )
+                                stepIndex = done.stepIndex
+                                task = done.task
+                                session.task = task
+                                if (done.kind == StepKind.SUSPENDED) {
+                                    return LoopResult.Suspended(done.reason.orEmpty())
+                                }
+                            }
+                            // 连续把 input 打到非输入控件上：多半是计划步骤选错了入口
+                            // （美团首页把「搜索框」和分类图标画在一起，模型会反复猜错）。
+                            // 到上限先重规划，没有余量再交人，不要让它一直换着图标试。
+                            if (session.inputTargetRejections >= MAX_INPUT_TARGET_REJECTIONS) {
+                                val replanned = replanOrSuspend(
+                                    session = session,
+                                    task = task,
+                                    stepIndex = stepIndex,
+                                    snapshot = snapshot,
+                                    reason = "连续 ${session.inputTargetRejections} 次输入目标不是输入框，计划步骤可能选错了入口",
+                                )
+                                stepIndex = replanned.stepIndex
+                                task = replanned.task
+                                session.task = task
+                                if (replanned.kind == StepKind.SUSPENDED) {
+                                    return LoopResult.Suspended(replanned.reason.orEmpty())
+                                }
+                            }
+                            // 纯视觉下连续猜坐标：OCR 给不出图标语义，再猜只会继续烧调用
+                            if (session.blindTapRejections >= MAX_BLIND_TAP_REJECTIONS) {
+                                val replanned = replanOrSuspend(
+                                    session = session,
+                                    task = task,
+                                    stepIndex = stepIndex,
+                                    snapshot = snapshot,
+                                    reason = "连续 ${session.blindTapRejections} 次坐标盲点被拦下，纯视觉页面缺少可点文字入口",
+                                )
+                                stepIndex = replanned.stepIndex
+                                task = replanned.task
+                                session.task = task
+                                if (replanned.kind == StepKind.SUSPENDED) {
+                                    return LoopResult.Suspended(replanned.reason.orEmpty())
+                                }
+                            }
                             // 同一步连续多个动作仍未达成：计划前提大概率失效。先受限重规划，
                             // 没有重规划余量再交人，不要一路烧到步数预算耗尽。
                             if (session.actionsOnStep >= STEP_ACTION_LIMIT) {
@@ -835,10 +982,35 @@ class Orchestrator @Inject constructor(
                         }
 
                         StepKind.SUSPENDED -> return LoopResult.Suspended(outcome.reason.orEmpty())
+
+                        // 待支付页交接：不代付，当前页面直接转验证并按结果页交付
+                        StepKind.FINISHED -> return LoopResult.Finished(snapshot, outcome.reason.orEmpty())
                     }
                 }
             }
         }
+    }
+
+    /**
+     * 功能：推进游标，并顺带吞掉"当前帧已经满足判据"的后续步骤
+     * 参数：session 会话；evidence 复核用的新帧
+     * 返回：推进后的游标与顺带推进的步数
+     *
+     * 只在后续步骤**自己写了后置条件且全部命中**时才顺带推进：没有判据的步骤必须由模型
+     * 明确声明，否则等于替模型猜它做没做完。顺带推进同样落库（游标持久化），审计里会写
+     * 明"并顺带满足后续 N 步的判据"，不把它伪装成一次普通声明。
+     */
+    private fun advanceGreedily(session: Session, evidence: ObservationSnapshot): Pair<PlanCursor, Int> {
+        var cursor = session.plan.advance(session.cursor)
+        var extra = 0
+        while (extra < MAX_GREEDY_ADVANCE) {
+            val next = session.plan.stepAt(cursor) ?: break
+            if (next.postcondition.isEmpty()) break
+            if (PlanProgress.matchedFragments(next, evidence).isEmpty()) break
+            cursor = session.plan.advance(cursor)
+            extra++
+        }
+        return cursor to extra
     }
 
     /**
@@ -864,11 +1036,11 @@ class Orchestrator @Inject constructor(
         val matched = PlanProgress.matchedFragments(step, evidence)
 
         if (step.postcondition.isEmpty() || matched.isNotEmpty()) {
-            val advanced = session.plan.advance(session.cursor)
-            val assertion = if (step.postcondition.isEmpty()) {
-                "规划器未给后置条件，按模型声明推进（弱证据）"
-            } else {
-                "页面出现后置条件：${matched.joinToString("；")}"
+            val (advanced, extra) = advanceGreedily(session, evidence)
+            val assertion = when {
+                step.postcondition.isEmpty() -> "规划器未给后置条件，按模型声明推进（弱证据）"
+                extra > 0 -> "页面出现后置条件：${matched.joinToString("；")}；并顺带满足后续 $extra 步的判据"
+                else -> "页面出现后置条件：${matched.joinToString("；")}"
             }
             recordAudit(
                 task.taskId, stepIndex, snapshot,
@@ -877,6 +1049,8 @@ class Orchestrator @Inject constructor(
             )
             session.cursor = advanced
             session.actionsOnStep = 0
+            session.inputTargetRejections = 0
+            session.blindTapRejections = 0
             session.stepRejections = 0
             session.stepMemoryIds = emptyList()
             val persisted = persistStepAdvance(task, stepIndex, evidence, session.plan, advanced)
@@ -899,6 +1073,8 @@ class Orchestrator @Inject constructor(
             )
             session.cursor = advanced
             session.actionsOnStep = 0
+            session.inputTargetRejections = 0
+            session.blindTapRejections = 0
             session.stepRejections = 0
             session.stepMemoryIds = emptyList()
             val persisted = persistStepAdvance(task, stepIndex, evidence, session.plan, advanced)
@@ -971,8 +1147,14 @@ class Orchestrator @Inject constructor(
             return StepResult(stepIndex, session.task, StepKind.SUSPENDED, blocked)
         }
 
-        val next = runCatching { planner.replan(session.spec, session.plan, reason, snapshot) }
+        val planned = runCatching { planner.replan(session.spec, session.plan, reason, snapshot) }
             .getOrNull()
+        planned?.usage?.let { usage ->
+            audit.recordSystemEvent(
+                task, outcome = "MODEL_USAGE", result = "重规划", decision = "ALLOW", usage = usage,
+            )
+        }
+        val next = planned?.value
         if (next == null) {
             val blocked = "重规划给不出可行计划：$reason"
             val persisted = persistProgress(task, stepIndex, snapshot, applied = false, goal = task.currentSubGoal.orEmpty())
@@ -990,6 +1172,8 @@ class Orchestrator @Inject constructor(
         session.cursor = cursor
         session.replans++
         session.actionsOnStep = 0
+        session.inputTargetRejections = 0
+        session.blindTapRejections = 0
         session.stepRejections = 0
         recordAudit(
             task.taskId, stepIndex, snapshot,
@@ -1018,7 +1202,10 @@ class Orchestrator @Inject constructor(
         stepLabel: String,
         action: AgentAction.Do,
         decision: DecideResult,
+        observeMs: Long,
+        decideMs: Long,
     ): StepResult {
+        val actStartedAt = SystemClock.elapsedRealtime()
         val digest = paramsDigestOf(action, snapshot)
         val transient = snapshot.overlay?.takeIf { it.kind == OverlayKind.TRANSIENT_OVERLAY }
         val overlayDismiss = transient != null && action.kind == ActionKind.TAP &&
@@ -1057,16 +1244,82 @@ class Orchestrator @Inject constructor(
             return suspendStep(task, stepIndex + 1, snapshot, stepLabel, reason)
         }
 
+        // 同一句话重复输入：自定义输入框（DeepSeek 输入框、美团订单备注）读不回正文时，
+        // 模型看不到刚写进去的字，会以为没写成功而反复重输（真机 12–20 次，白烧 10+ 次调用）。
+        // 这里按"文本 + 目标锚点"认出重复，软拒绝并回显原因，逼它继续下一步。
+        if (action.kind == ActionKind.TEXT) {
+            val writeKey = textWriteKey(action)
+            if (writeKey != null && writeKey == session.lastTextWrite) {
+                val reason = "同一输入框已经写入相同文本「${action.text}」，页面读不回正文属正常，" +
+                    "不要重复输入；请直接执行下一步"
+                recordAudit(
+                    task.taskId, stepIndex + 1, snapshot, action, decision, verdict = null,
+                    outcome = "DUPLICATE_TEXT", digest = digest, result = reason,
+                )
+                session.actionsOnStep++
+                session.task = persistProgress(task, stepIndex + 1, snapshot, applied = false, stepLabel)
+                return StepResult(stepIndex + 1, session.task, actionExecuted = false)
+            }
+        }
+
+        // input 打到非输入控件上：真机上模型会把搜索框认成旁边的图标或列表项，
+        // 注入到不可编辑容器后既写不进去、又会被判成"结果未知"直接转人工。
+        // 这里在注入前拦下并作为一次软拒绝继续循环，模型下一次能看到原因并改选目标。
+        invalidInputTarget(action, snapshot)?.let { reason ->
+            recordAudit(
+                task.taskId, stepIndex + 1, snapshot, action, decision, verdict = null,
+                outcome = "INVALID_TARGET", digest = digest, result = reason,
+            )
+            session.inputTargetRejections++
+            session.actionsOnStep++
+            session.task = persistProgress(task, stepIndex + 1, snapshot, applied = false, stepLabel)
+            return StepResult(stepIndex + 1, session.task, actionExecuted = false)
+        }
+        // 目标校验通过：清空连续拦截计数，避免偶发一次错点把整步提前判死
+        if (action.kind == ActionKind.TEXT) session.inputTargetRejections = 0
+
+        // 纯视觉下的坐标盲点：OCR 只能给出文字位置，图标/空白区没有语义。
+        // 真机上模型会反复猜「搜索图标在哪」，连点三次都没命中后整任务判 STUCK。
+        // 落点不在任何 OCR 文字元素上时先软拒绝，让它改点文字入口或换策略。
+        blindCoordinateTap(action, snapshot)?.let { reason ->
+            recordAudit(
+                task.taskId, stepIndex + 1, snapshot, action, decision, verdict = null,
+                outcome = "BLIND_TAP", digest = digest, result = reason,
+            )
+            session.blindTapRejections++
+            session.actionsOnStep++
+            session.task = persistProgress(task, stepIndex + 1, snapshot, applied = false, stepLabel)
+            return StepResult(stepIndex + 1, session.task, actionExecuted = false)
+        }
+        // 坐标点击落在 OCR 文字上：清空连续盲点计数
+        if (action.kind == ActionKind.TAP) session.blindTapRejections = 0
+
         if (!targetStillThere(session.handle, action, snapshot)) {
             // 模型思考期间页面变了：旧编号作废，重新观测后再决策（§1.3 S4d）
             recordAudit(
                 task.taskId, stepIndex + 1, snapshot, action, decision, verdict = null,
                 outcome = "STALE", digest = digest, result = "页面已变，动作作废",
             )
-            return StepResult(stepIndex + 1, persistProgress(task, stepIndex + 1, snapshot, false, stepLabel))
+            return StepResult(
+                stepIndex + 1,
+                persistProgress(task, stepIndex + 1, snapshot, false, stepLabel),
+                actionExecuted = false,
+            )
         }
 
         val verdict = guard.assess(session.spec, action, snapshot)
+
+        // 点餐/下单类任务走到「立即支付」这种只剩付款的按钮：不再代点，也不把用户喊回来重跑，
+        // 直接把当前页面按结果页交付；地址与备注已在前面填好，本人过来只需要点一下付款。
+        paymentHandoverReason(session.spec, action, snapshot)?.let { reason ->
+            recordAudit(
+                task.taskId, stepIndex + 1, snapshot, action, decision, verdict,
+                outcome = "PAYMENT_HANDOVER", digest = digest,
+                result = reason, decisionOverride = "HANDOFF",
+            )
+            session.task = persistProgress(task, stepIndex + 1, snapshot, applied = false, stepLabel)
+            return StepResult(stepIndex + 1, session.task, StepKind.FINISHED, reason, actionExecuted = false)
+        }
 
         if (!verdict.allowed && !verdict.requiresConfirmation) {
             // L2B 或语义不明：硬阻断，只能由本人接管；语义不明的挂起允许用户排除页面问题后「继续」
@@ -1092,7 +1345,19 @@ class Orchestrator @Inject constructor(
             planVersion = session.plan.version,
             planStepId = session.plan.stepAt(session.cursor)?.stepId,
         )
-        val grantId = if (verdict.requiresConfirmation) {
+        // 定时任务的预设授权：只对 L2A 生效，且不写 grant 表。
+        // 它放行的是"这一类动作"，不是"这一个动作"，所以审计里必须留下 STANDING_GRANT；
+        // L2B（支付/验证码/人脸）在 Guard 那一步就已经硬阻断，这里碰不到。
+        val standing = canAutoApprove(verdict, session.spec.autoApproveL2a)
+        if (standing) {
+            audit.recordSystemEvent(
+                task = task,
+                outcome = "STANDING_GRANT",
+                result = "定时任务预设授权自动批准 ${action.kind.name}：${verdict.reason}",
+                decision = "ALLOW",
+            )
+        }
+        val grantId = if (verdict.requiresConfirmation && !standing) {
             val granted = consumeGrant(task, action, snapshot, intent)
             if (granted == null) {
                 recordAudit(
@@ -1149,9 +1414,11 @@ class Orchestrator @Inject constructor(
         // 真机上美团首页就是这种情况——第一次判未知，实际页面已经跳走了。
         // 只要求"没有写入意图"：L1 的普通点击同样会被动画页面判成未知（B 站首页实测），
         // 延迟复核不重放任何动作，只是再看一眼，风险与 L0 相同。
-        if (effect == EffectOutcome.OUTCOME_UNKNOWN && intent == null &&
-            action.kind == ActionKind.TAP
-        ) {
+        // TEXT 也允许复核：输入框在转场/渲染完成前读不到正文，页面稍后稳定就能确认；
+        // 复核同样不重放输入，只是重新观察，不会造成二次写入。
+        val recheckable = action.kind == ActionKind.TEXT ||
+            (intent == null && action.kind == ActionKind.TAP)
+        if (effect == EffectOutcome.OUTCOME_UNKNOWN && recheckable) {
             // 两轮复核：1.2s 后一次，仍未知再等 2.5s 一次。B 站跳视频页这类重转场
             // 1.2s 不够，一次复核不到就挂人工会让演示与真实使用都很难走通。
             for (recheckGap in listOf(UNKNOWN_RECHECK_MS, UNKNOWN_RECHECK_SECOND_MS)) {
@@ -1170,6 +1437,14 @@ class Orchestrator @Inject constructor(
                 )
                 if (effect != EffectOutcome.OUTCOME_UNKNOWN) break
             }
+        }
+
+        // 自定义输入框（DeepSeek/微信）常读不回正文：注入已被系统接受、且目标已通过
+        // 输入区域校验时，再挂起只会让用户手动核对一段已经写进去的文字。
+        // 这里按"已写入"继续，证据里明确标注未回读；模型下一步看到新页面会自行纠偏。
+        if (effect == EffectOutcome.OUTCOME_UNKNOWN && action.kind == ActionKind.TEXT && applied) {
+            effect = EffectOutcome.CONFIRMED
+            evidence += "；系统接受写入，页面未回读（按已写入继续）"
         }
 
         val beforeShot = auditShots.save(task.taskId, stepIndex + 1, "before", snapshot.image?.bytes)
@@ -1191,10 +1466,22 @@ class Orchestrator @Inject constructor(
             outcome = effect.name, digest = digest, actionId = intent?.actionId,
             grantId = grantId, result = evidence,
             // 基线判定是"无授权不可执行"，但这一步确实凭授权执行了；审计要写 ALLOW 并靠 grantId 区分
-            decisionOverride = if (grantId != null) "ALLOW" else null,
+            decisionOverride = if (grantId != null || standing) "ALLOW" else null,
             screenshotBefore = beforeShot,
             screenshotAfter = afterShot,
+            timing = StepTiming(
+                observeMs = observeMs,
+                decideMs = decideMs,
+                actMs = SystemClock.elapsedRealtime() - actStartedAt,
+            ),
         )
+
+        // 记住这次真正落盘的输入，供下一次重复输入拦截；非 TEXT 动作会改变页面焦点，清空记忆
+        session.lastTextWrite = if (action.kind == ActionKind.TEXT) {
+            textWriteKey(action)?.takeIf { applied }
+        } else {
+            null
+        }
 
         val advanced = persistProgress(task, stepIndex + 1, snapshot, applied, stepLabel)
 
@@ -1212,7 +1499,7 @@ class Orchestrator @Inject constructor(
         session.actionsOnStep++
         if (overlayDismiss) session.overlayDismissals++
         session.task = advanced
-        return StepResult(stepIndex + 1, persistSession(session))
+        return StepResult(stepIndex + 1, persistSession(session), effect = effect)
     }
 
     /**
@@ -1376,6 +1663,12 @@ class Orchestrator @Inject constructor(
      * 返回：无
      */
     private suspend fun drive(session: Session) {
+        // 执行期间把默认输入法临时换成本应用的无键盘输入法：
+        // 目标 App 的输入框获得焦点时，系统不会再在主屏弹出可见键盘
+        // （真机实测百度输入法会盖在主屏上，比暂时没有键盘更干扰）。
+        // 挂起、结束或转人工时由 suspendForHuman / retainOrRelease / destroyDisplay 还原。
+        runCatching { transport.ime.select() }
+            .onFailure { Log.d(AGENT_TAG, "接管默认输入法失败：${it.message}") }
         when (val result = executeLoop(session)) {
             is LoopResult.Finished -> verifyPhase(session, result.snapshot, result.summary)
             is LoopResult.Suspended, is LoopResult.Failed -> Unit
@@ -1402,8 +1695,38 @@ class Orchestrator @Inject constructor(
         } else {
             null
         }
-        // 没有注册复验路线时退一步：给页面一点时间稳定，再取一份全新观察做同页重读。
-        val readback = if (reach.snapshot == null && primary.passed) {
+        // 没有注册复验路线时退一步：给页面一点时间稳定，再做一次同页重读。
+        // 查看类任务只读前台包名——视频/直播页永远在动，等不到"一致观察"（真机 B 站实测），
+        // 用整帧快照会把一次成功判成"未复验"。
+        val viewTask = isViewTask(session.spec)
+        // 查看类任务的初验判据是"前台包名"（在 Verifier 内决定），不是这里的字段级初验；
+        // 字段级初验对这类任务本来就会因为计划期盲猜的文案失败，不能拿它当门槛。
+        val needsReadback = reach.snapshot == null && (viewTask || primary.passed)
+        Log.d(
+            AGENT_TAG,
+            "验证：viewTask=$viewTask 字段初验=${primary.passed} 复验页=${reach.snapshot != null} " +
+                "输入=${session.spec.inputText.take(24)}",
+        )
+        val readbackPackage = if (needsReadback && viewTask) {
+            delay(READBACK_DELAY_MS)
+            val foreground = runCatching {
+                transport.activities.foregroundOn(session.handle)?.packageName
+            }.getOrNull()
+            // 无障碍窗口根节点在播放页会短暂读不到（§5.6 第 3 条），此时退回 AMS：
+            // 目标包在副屏上仍有任务，就说明页面没有被销毁。
+            val packageName = foreground ?: runCatching {
+                if (transport.activities.hasTaskOnDisplay(session.spec.packageName, session.handle)) {
+                    session.spec.packageName
+                } else {
+                    null
+                }
+            }.getOrNull()
+            Log.d(AGENT_TAG, "复验重读：前台=${foreground ?: "读不到"} 采用=${packageName ?: "无"}")
+            packageName
+        } else {
+            null
+        }
+        val readback = if (needsReadback && !viewTask) {
             runCatching {
                 delay(READBACK_DELAY_MS)
                 observe(session.handle)
@@ -1418,7 +1741,8 @@ class Orchestrator @Inject constructor(
             secondaryUnreachable = reach.note,
             adopted = adopted,
             readback = readback,
-            viewTask = isViewTask(session.spec),
+            viewTask = viewTask,
+            readbackPackage = readbackPackage,
         )
 
         val target = when (result.outcome) {
@@ -1445,12 +1769,14 @@ class Orchestrator @Inject constructor(
             result = summary,
             evidence = (result.evidence + listOfNotNull(
                 result.note,
-                reach.note.takeIf { reach.snapshot != null },
+                // 复验不可达的技术原因只留在审计里：任务行与通知用给人看的说法。
+                reach.note,
                 result.unreachableReason,
             )).joinToString("；"),
             decisionOverride = if (target == TaskState.NEED_HUMAN) "NEED_HUMAN" else "ALLOW",
         )
-        val verified = transition(verifying, target, result.unreachableReason)
+        val terminal = terminalReason(session.spec, target, summary, result)
+        val verified = transition(verifying, target, terminal)
         session.task = verified
 
         // 查看类/购物类任务的交付物都是"agent 停下的那一页"：视频页、对话页、购物车、
@@ -1472,17 +1798,83 @@ class Orchestrator @Inject constructor(
         )
 
         if (target == TaskState.NEED_HUMAN) {
-            notifier.notifyResumable(verifying.taskId, result.unreachableReason ?: "完成声明未通过验证")
+            notifier.notifyResumable(verifying.taskId, terminal)
         } else {
             // 走到终态就发一条结果报告：原因、步数与是否经过复验（§4.1 完成报告）
             notifier.notifyResult(
                 taskId = verifying.taskId,
                 state = target,
-                reason = result.unreachableReason ?: summary,
+                reason = terminal,
                 steps = verified.budgetStepsUsed,
                 openResult = keepResult,
             )
         }
+    }
+
+    /**
+     * 功能：把验证结论翻成用户能执行的一句话
+     * 参数：spec 任务约束；target 终态；summary 完成说明；result 验证结论
+     * 返回：写进任务行与结果通知的说明
+     *
+     * 交付页任务的 MISMATCH 已按"结果页交付"处理（不转人工），但原始说明是
+     * 「初验未通过：订单已提交（期望包含…）」——用户读到的是失败。这里改成
+     * "停在哪一页、接下来做什么"；字段不符的细节留在审计证据里。
+     */
+    private fun terminalReason(
+        spec: TaskSpec,
+        target: TaskState,
+        summary: String,
+        result: VerificationResult,
+    ): String {
+        if (target == TaskState.COMPLETED_UNVERIFIED &&
+            isDeliveryPageTask(spec) &&
+            result.outcome == VerificationOutcome.MISMATCH
+        ) {
+            val handover = isOrderingTask(spec) && summary.contains("待支付")
+            return if (handover) summary else "已停在目标页面；点击结果通知可直接打开查看"
+        }
+        return result.unreachableReason ?: summary
+    }
+
+    /**
+     * 功能：主动释放"保留中的结果页"
+     * 参数：无
+     * 返回：释放了返回 true
+     *
+     * 队列因为一条已完成任务占着副屏而停住时调用：宁可让用户稍后从通知重新打开 App，
+     * 也不要把后续任务一直堵在 CREATED。
+     *
+     * 判断依据是"当前副屏归属谁 + 那个任务是不是终态/有保留结果"，而不是单独记一个
+     * taskId：用户点过结果通知后，结果页已经被搬到主屏、副屏也拆了，单独记录的 id 会过期，
+     * 之后队列明明能释放却一直返回 false（真机上就是这样把后续任务堵住的）。
+     */
+    suspend fun releaseRetainedResults(): Boolean {
+        val handle = activeDisplay.current() ?: return false
+        val owner = activeDisplay.owner()
+        if (owner == null) {
+            Log.d(AGENT_TAG, "释放保留页跳过：副屏没有归属任务")
+            return false
+        }
+        val state = runCatching { taskDao.findById(owner)?.state }.getOrNull()
+        val taskState = state?.let { runCatching { TaskState.valueOf(it) }.getOrNull() }
+        if (taskState == TaskState.NEED_HUMAN) {
+            Log.d(AGENT_TAG, "释放保留页跳过：副屏归人工接管任务 $owner")
+            return false
+        }
+        // 只有终态任务的屏可以收；结果登记已清（例如用户点过通知）也照样收，
+        // 避免一块遗留的终态副屏把队列永久堵死。运行中的任务绝不在这里拆屏。
+        val terminal = taskState?.isTerminal == true
+        if (!terminal && !resultViews.isPending(owner)) {
+            Log.d(AGENT_TAG, "释放保留页跳过：副屏归运行中的任务 $owner state=$state")
+            return false
+        }
+        destroyDisplay(handle)
+        resultViews.clear(owner)
+        Log.d(
+            AGENT_TAG,
+            "队列需要副屏，主动释放保留的结果页 task=$owner（终态=$terminal state=$state）",
+        )
+        return true
     }
 
     /**
@@ -1493,33 +1885,7 @@ class Orchestrator @Inject constructor(
      * 副屏被结果页占住时，队列不能取下一个任务（单屏约束）。用户迟迟不点通知时
      * 必须自动释放，否则一条没被查看的结果会把整条队列永久堵死。
      */
-    /** 当前副屏上保留着结果页的任务；队列被挡时可主动释放。 */
-    private var retainedResultTaskId: String? = null
-
-    /**
-     * 功能：主动释放"保留中的结果页"
-     * 参数：无
-     * 返回：释放了返回 true
-     *
-     * 队列因为一条已完成任务占着副屏而停住时调用：宁可让用户稍后从通知重新打开 App，
-     * 也不要把后续任务一直堵在 CREATED。
-     */
-    suspend fun releaseRetainedResults(): Boolean {
-        val taskId = retainedResultTaskId ?: return false
-        val handle = activeDisplay.current() ?: return false
-        if (!activeDisplay.isOwnedBy(taskId)) {
-            retainedResultTaskId = null
-            return false
-        }
-        destroyDisplay(handle)
-        resultViews.clear(taskId)
-        retainedResultTaskId = null
-        Log.d(AGENT_TAG, "队列需要副屏，主动释放保留的结果页 task=$taskId")
-        return true
-    }
-
     private fun scheduleResultRelease(taskId: String) {
-        retainedResultTaskId = taskId
         resultReleaseScope.launch {
             delay(RESULT_RETENTION_MS)
             if (!resultViews.isPending(taskId)) return@launch
@@ -1528,7 +1894,6 @@ class Orchestrator @Inject constructor(
                 destroyDisplay(handle)
             }
             resultViews.clear(taskId)
-            if (retainedResultTaskId == taskId) retainedResultTaskId = null
             Log.d(AGENT_TAG, "结果页保留超时，已释放副屏 task=$taskId")
         }
     }
@@ -1770,6 +2135,8 @@ class Orchestrator @Inject constructor(
             fail(task, reason)
             return LoopResult.Failed(reason)
         }
+        // 转人工后用户要在接管页/主屏自己操作，必须先还回可用键盘
+        runCatching { transport.ime.restore() }
         taskDao.upsert(
             task.copy(
                 state = TaskState.NEED_HUMAN.name,
@@ -1859,6 +2226,236 @@ class Orchestrator @Inject constructor(
         snapshot.displayGeneration != session.handle.generation ->
             "副屏已重建（代次 ${snapshot.displayGeneration} ≠ ${session.handle.generation}）"
         else -> null
+    }
+
+    /**
+     * 功能：纯视觉下拦截落在 OCR 文字之外的坐标点击
+     * 参数：action 动作；snapshot 当前观察
+     * 返回：问题说明；不是盲点或落点在文字元素内时为 null
+     *
+     * OCR 只能给出文字位置，图标和空白区没有语义。真机上微信这类控件树封锁的 App，
+     * 模型会反复猜"搜索图标在哪"，三次坐标点击都无效后整任务判 STUCK。
+     * 落点不在任何 OCR 文字元素上时软拒绝，让模型改点文字入口或换 wait/back/replan。
+     */
+    private fun blindCoordinateTap(action: AgentAction.Do, snapshot: ObservationSnapshot): String? {
+        if (action.kind != ActionKind.TAP) return null
+        if (snapshot.mode != ObservationMode.VISION_ONLY) return null
+        val normX = action.normX ?: return null
+        val normY = action.normY ?: return null
+        if (snapshot.elements.isEmpty()) return null
+        val px = normX * snapshot.nativeWidth / NORM_SCALE
+        val py = normY * snapshot.nativeHeight / NORM_SCALE
+        if (snapshot.elements.any { containsPoint(it.bounds, px, py) }) return null
+
+        val searchHints = snapshot.elements
+            .filter { it.text.contains("搜索") || it.contentDescription.contains("搜索") }
+            .take(2)
+            .joinToString("；") { "#${it.index}「${labelOf(it)}」" }
+        val hint = if (searchHints.isEmpty()) "" else "；页面上的搜索入口是 $searchHints，请点它的编号"
+        return "纯视觉下坐标(x=$normX,y=$normY)没有落在任何可识别文字上，图标/空白区的盲点无效$hint。" +
+            "请改用元素编号；如果目标是无文字图标，先找它旁边的文字入口，或输出 back/replan 换路径"
+    }
+
+    /**
+     * 功能：校验 input 动作是否落在可输入控件上
+     * 参数：action 动作；snapshot 当前观察
+     * 返回：问题说明；目标可用、无法判断或不是 TEXT 时为 null
+     *
+     * 只在控件树可读时判断。每个可输入节点连同包住它的最近可点击容器算作一个"输入区域"：
+     * 美团实测搜索框的真实 EditText 常被外层 LinearLayout 遮住，只按 editable 节点判定会误杀；
+     * 反过来只按 bounds 相交又太宽松——列表图标与搜索栏相差几个像素也会被当成输入框。
+     * 纯视觉没有 editable 标记、页面也找不到输入提示时一律放行，交给原有的执行层兜底。
+     */
+    /**
+     * 功能：连续第 2 次把文本打到非输入控件时，若整页只有一个可输入节点就直接改投
+     * 参数：task 当前任务；session 会话；stepIndex 当前步；snapshot 当前观察；
+     *       action 模型动作；decision 决策结果
+     * 返回：实际要执行的动作；不需要改投时原样返回
+     *
+     * 美团首页的活动浮层会盖住搜索框，模型连续 7 次把输入目标选成浮层，
+     * 本地只回显「#3 才是搜索框」，两次重规划仍纠正不过来，白烧 8 步。
+     * 第一次仍交给模型自己改（保留它的判断）；第二次只有在"整页唯一可输入节点"时
+     * 才替代目标——多输入框页面（登录、表单）行为完全不变。
+     */
+    private suspend fun coerceInputTarget(
+        task: TaskEntity,
+        session: Session,
+        stepIndex: Int,
+        snapshot: ObservationSnapshot,
+        action: AgentAction.Do,
+        decision: DecideResult,
+    ): AgentAction.Do {
+        if (action.kind != ActionKind.TEXT) return action
+        if (session.inputTargetRejections < 1) return action
+        if (inputTargetProblem(action, snapshot) == null) return action
+        val editables = snapshot.elements.filter { it.editable }
+        if (editables.size != 1) return action
+
+        val target = editables.first()
+        val original = snapshot.elements.firstOrNull { it.index == action.elementId }
+            ?: elementAtPoint(snapshot, action.normX, action.normY)
+        val reason = "输入目标「${original?.let { labelOf(it) } ?: "坐标"}」不在输入框内，" +
+            "整页只有一个可输入节点 #${target.index}「${labelOf(target)}」，已自动改投"
+        recordAudit(
+            task.taskId, stepIndex + 1, snapshot, action, decision, verdict = null,
+            outcome = "COERCED_TARGET", result = reason,
+        )
+        Log.d(AGENT_TAG, "input 目标改投 #${target.index} ${labelOf(target)}（原目标 ${original?.index}）")
+        return action.copy(
+            elementId = target.index,
+            normX = null,
+            normY = null,
+            targetFingerprint = ActionProtocol.fingerprintOf(target),
+        )
+    }
+
+    private fun invalidInputTarget(action: AgentAction.Do, snapshot: ObservationSnapshot): String? {
+        val reason = inputTargetProblem(action, snapshot)
+        if (action.kind == ActionKind.TEXT) {
+            Log.d(
+                AGENT_TAG,
+                "input 目标校验 ${if (reason == null) "放行" else "拒绝：$reason"} " +
+                    "可输入节点=${snapshot.elements.count { it.editable }} 模式=${snapshot.mode}",
+            )
+        }
+        return reason
+    }
+
+    /** 校验主体；返回值语义与 [invalidInputTarget] 相同。 */
+    private fun inputTargetProblem(action: AgentAction.Do, snapshot: ObservationSnapshot): String? {
+        if (action.kind != ActionKind.TEXT) return null
+        if (snapshot.mode == ObservationMode.VISION_ONLY) return null
+
+        val areas = snapshot.elements.filter { it.editable }.map { editable ->
+            wrapperOf(editable, snapshot) ?: editable
+        }
+        val px = action.normX?.let { it * snapshot.nativeWidth / NORM_SCALE }
+        val py = action.normY?.let { it * snapshot.nativeHeight / NORM_SCALE }
+        val pointInside = px != null && py != null && areas.any { containsPoint(it.bounds, px, py) }
+        if (pointInside) return null
+
+        val target = snapshot.elements.firstOrNull { it.index == action.elementId }
+            ?: elementAtPoint(snapshot, action.normX, action.normY)
+            ?: return null
+        if (target.editable) return null
+        val center = target.bounds.center
+        if (areas.any { containsPoint(it.bounds, center.x, center.y) }) return null
+
+        // 页面一个可输入节点都没有时，只有存在「请输入…」这类搜索框提示才做校验；
+        // 否则可能只是自绘输入框，不能凭控件树里没有 editable 就判成打错目标。
+        if (areas.isEmpty()) {
+            val hint = snapshot.elements.firstOrNull { isInputHint(it) } ?: return null
+            val area = wrapperOf(hint, snapshot) ?: hint
+            if (containsPoint(area.bounds, center.x, center.y)) return null
+            val hintLabel = hint.text.ifEmpty { hint.contentDescription }
+            return "输入目标「${labelOf(target)}」不在搜索框内。搜索框是 " +
+                "#${hint.index}「$hintLabel」，请点它所在的输入框或给它的坐标；" +
+                "若搜索框被活动浮层挡住，先关闭/返回再输入"
+        }
+
+        val label = labelOf(target)
+        val hintText = if (action.elementId != null) "改选标有「可输入」的元素" else "给输入框范围内的坐标"
+        return "输入目标「$label」不是输入框（无「可输入」标记）。请$hintText，或先等待页面加载完成再输入"
+    }
+
+    /** 元素的展示文本，空串时给一个占位说明。 */
+    private fun labelOf(element: com.neptine.mimir.core.contract.UiElement): String =
+        element.text.ifEmpty { element.contentDescription }.ifEmpty { "(无文本)" }
+
+    /**
+     * 功能：生成一次输入动作的去重键
+     * 参数：action 输入动作
+     * 返回：`正文|目标锚点`；缺正文时为 null
+     *
+     * 目标锚点优先用元素编号，其次用坐标归到 40px 网格。真机上模型重复输入时
+     * 落点会差几个像素，逐像素比较认不出重复，网格化后仍能命中同一个输入框。
+     */
+    private fun textWriteKey(action: AgentAction.Do): String? {
+        val text = action.text.orEmpty()
+        if (text.isEmpty()) return null
+        val anchor = action.elementId?.let { "e:$it" }
+            ?: action.targetFingerprint?.bounds?.let { bounds ->
+                "b:${bounds.center.x / TEXT_TARGET_GRID}:${bounds.center.y / TEXT_TARGET_GRID}"
+            }
+            ?: action.normX?.let { x ->
+                action.normY?.let { y -> "n:${x / TEXT_TARGET_GRID}:${y / TEXT_TARGET_GRID}" }
+            }
+            ?: "none"
+        return "$text|$anchor"
+    }
+
+    /**
+     * 功能：判断这一步是不是"已到待支付页、只剩付款"
+     * 参数：spec 任务约束；action 动作；snapshot 当前观察
+     * 返回：交接说明；不是该场景时为 null
+     *
+     * 只在用户明确要下单/点餐、但没要求"代付"的任务里生效：
+     * 用「立即支付」「收银台」这类只剩付款的按钮收尾，而不是把它们当成失败挂在 NEED_HUMAN。
+     */
+    private fun paymentHandoverReason(
+        spec: TaskSpec,
+        action: AgentAction.Do,
+        snapshot: ObservationSnapshot,
+    ): String? {
+        if (action.kind != ActionKind.TAP) return null
+        val target = targetTextOf(action, snapshot)
+        val keyword = guard.paymentOnlyKeyword(target) ?: return null
+        if (!isOrderingTask(spec)) return null
+        return "已到待支付页（命中「$keyword」），地址与备注已按任务准备好；" +
+            "按约定不代付，请你本人点一下「立即支付」完成付款"
+    }
+
+    /**
+     * 功能：判断任务意图是"下单/点餐/加购"而不是"代付"
+     * 参数：spec 任务约束
+     * 返回：是下单类任务为 true
+     *
+     * 用户原话里出现支付/付款，或任务类型本身是资金类，就不走交接分支，仍按 L2B 交人。
+     */
+    private fun isOrderingTask(spec: TaskSpec): Boolean {
+        val text = spec.inputText.lowercase()
+        val type = spec.taskType.uppercase()
+        if (listOf("PAY", "TRANSFER", "RECHARGE", "PAYMENT").any { type.contains(it) }) return false
+        // 「停在支付页 / 到待支付页」描述的是终点，不是要求代付：
+        // 英文任务 "stop at the payment page" 里含 payment，按原规则会被判成资金任务，
+        // 到「立即支付」时直接硬阻断，而不是按待支付页交接（真机实测）。
+        val destinationOnly = PAYMENT_DESTINATION_HINTS.any { text.contains(it) }
+        if (!destinationOnly &&
+            listOf("支付", "付款", "付钱", "结账", "pay", "payment").any { text.contains(it) }
+        ) {
+            return false
+        }
+        val orderingType = listOf("ORDER", "SHOPPING", "PURCHASE", "DELIVERY", "CART").any { type.contains(it) }
+        val orderingText = listOf("点", "下单", "购买", "买", "外卖", "order", "buy", "cart").any { text.contains(it) }
+        return orderingType || orderingText
+    }
+
+    /** 包住目标节点的最近可点击容器；没有时返回 null。 */
+    private fun wrapperOf(
+        inner: com.neptine.mimir.core.contract.UiElement,
+        snapshot: ObservationSnapshot,
+    ): com.neptine.mimir.core.contract.UiElement? {
+        val center = inner.bounds.center
+        // 只收高度接近输入框本身的容器：美团首页把搜索栏和分类图标包在同一个可点击大卡片里，
+        // 不限制高度会让「团购」图标也被当成输入区域，校验形同虚设。
+        val maxHeight = inner.bounds.height + WRAPPER_HEIGHT_MARGIN_PX
+        return snapshot.elements
+            .filter {
+                it.clickable && it.index != inner.index &&
+                    containsPoint(it.bounds, center.x, center.y) &&
+                    it.bounds.height <= maxHeight
+            }
+            .minByOrNull { it.bounds.width.toLong() * it.bounds.height.toLong() }
+    }
+
+    /** 点是否落在矩形内（含边界）。 */
+    private fun containsPoint(bounds: Bounds, x: Int, y: Int): Boolean =
+        x in bounds.left..bounds.right && y in bounds.top..bounds.bottom
+
+    /** 文案是否像输入框的占位提示。 */
+    private fun isInputHint(element: com.neptine.mimir.core.contract.UiElement): Boolean {
+        val text = element.text.ifEmpty { element.contentDescription }
+        return text.contains("请输入") || text.contains("搜索框") || text.contains("Search", ignoreCase = true)
     }
 
     /**
@@ -2392,6 +2989,7 @@ class Orchestrator @Inject constructor(
         memoryAssertion: String? = null,
         screenshotBefore: String? = null,
         screenshotAfter: String? = null,
+        timing: StepTiming? = null,
     ) {
         audit.record(
             AuditEntity(
@@ -2421,6 +3019,14 @@ class Orchestrator @Inject constructor(
                 memoryUsed = memoryUsed,
                 memoryAssertion = memoryAssertion,
                 imageTokens = imageTokensOf(snapshot),
+                // 实测用量（后端返回什么记什么）；只有"这一步真的调了模型"才有值，
+                // 系统事件行保持 0，统计时按非零行累加即可。
+                promptTokens = decision?.usage?.promptTokens ?: 0,
+                completionTokens = decision?.usage?.completionTokens ?: 0,
+                observeMs = timing?.observeMs ?: 0,
+                decideMs = timing?.decideMs ?: 0,
+                actMs = timing?.actMs ?: 0,
+                totalMs = timing?.totalMs ?: 0,
                 screenshotBefore = screenshotBefore,
                 screenshotAfter = screenshotAfter,
             ),
@@ -2450,6 +3056,8 @@ class Orchestrator @Inject constructor(
     private suspend fun retainOrRelease(taskId: String, handle: DisplayHandle) {
         val state = runCatching { TaskState.valueOf(taskDao.findById(taskId)?.state.orEmpty()) }.getOrNull()
         if (state == TaskState.NEED_HUMAN || resultViews.isPending(taskId)) {
+            // 保留副屏期间用户要看结果或接手操作，键盘不能继续被无键盘输入法占着
+            runCatching { transport.ime.restore() }
             Log.d(AGENT_TAG, "任务结束，保留副屏 ${handle.displayId} 供人工处理/查看结果")
             return
         }
@@ -2502,6 +3110,14 @@ class Orchestrator @Inject constructor(
         var overlaySeen: Boolean = false,
         var overlayDismissals: Int = 0,
         var visionWaits: Int = 0,
+        /** 连续多少次单步决策超时；任意一次成功决策后清零。 */
+        var stepTimeouts: Int = 0,
+        /** 当前步骤连续多少次输入目标被校验拦下；达到上限就重规划。 */
+        var inputTargetRejections: Int = 0,
+        /** 当前步骤连续多少次纯视觉坐标盲点被拦下；达到上限就重规划。 */
+        var blindTapRejections: Int = 0,
+        /** 上一次已落盘的输入动作键（文本 + 目标锚点）；用于拦截同一句话的重复输入。 */
+        var lastTextWrite: String? = null,
         /** 当前步骤的游标键（子任务:步骤），用于判断"是否换了步骤"。 */
         var stepEntryKey: String = "",
         /** 进入当前步骤时页面上的文本（归一化），用于判断判据是不是猜的。 */
@@ -2562,13 +3178,16 @@ class Orchestrator @Inject constructor(
         data class Failed(val reason: String) : LoopResult
     }
 
-    /** 单步处理的两种去向。 */
+    /** 单步处理的去向。 */
     private enum class StepKind {
         /** 继续下一步。 */
         CONTINUE,
 
         /** 已挂起，主循环退出。 */
         SUSPENDED,
+
+        /** 就地收尾（待支付页交接），主循环转验证。 */
+        FINISHED,
     }
 
     /**
@@ -2578,12 +3197,17 @@ class Orchestrator @Inject constructor(
      * @property task 处理后的任务行
      * @property kind 继续还是挂起
      * @property reason 挂起原因；继续时为空
+     * @property actionExecuted 动作是否真的注入过；被拦下/作废时为 false，
+     *       主循环据此忽略动作里携带的 step_done 声明
+     * @property effect 注入后的三态判定；只用于判断"页面是否真的变了"
      */
     private data class StepResult(
         val stepIndex: Int,
         val task: TaskEntity,
         val kind: StepKind = StepKind.CONTINUE,
         val reason: String? = null,
+        val actionExecuted: Boolean = true,
+        val effect: EffectOutcome? = null,
     )
 
     /** 主屏交还监听用的作用域：与任务执行解耦，任务结束后监听自行退出。 */
@@ -2628,6 +3252,12 @@ class Orchestrator @Inject constructor(
         /** 执行前复验允许的目标位移（像素）；720 宽度下约 8dp。 */
         const val TARGET_TOLERANCE_PX = 24
 
+        /** 输入框外层容器的额外高度上限（像素）：超过它的可点击大卡片不算输入区域。 */
+        const val WRAPPER_HEIGHT_MARGIN_PX = 120
+
+        /** 输入去重时坐标归一的网格边长（像素）：模型重复输入时落点常差几个像素。 */
+        const val TEXT_TARGET_GRID = 40
+
         /** 卡死检测的回看步数：连续这么多步同动作同目标且无界面变化即判卡住。 */
         const val STUCK_WINDOW = 3
 
@@ -2637,8 +3267,23 @@ class Orchestrator @Inject constructor(
         /** 同一个步骤上连续执行多少个动作仍未达成即判定计划前提失效。 */
         const val STEP_ACTION_LIMIT = 12
 
+        /** 同一步骤连续几次输入目标被校验拦下就重规划；再试只会继续猜错图标。 */
+        const val MAX_INPUT_TARGET_REJECTIONS = 3
+
+        /** 同一步骤连续几次纯视觉坐标盲点被拦下就重规划；图标语义 OCR 给不出来。 */
+        const val MAX_BLIND_TAP_REJECTIONS = 2
+
         /** 同一步骤连续几次"声称完成但页面无后置条件"即判定计划前提失效。 */
         const val MAX_STEP_REJECTIONS = 2
+
+        /**
+         * 一次步骤复核最多顺带推进几步。
+         *
+         * 模型常在"已经做完第 2、3 步"之后才补一句 step_done，旧实现要为每一步再发一次
+         * 完整视觉请求。同一帧既然已经满足后续步骤的判据，就一次推进到底；
+         * 上限 3 步是防止判据文案过宽（例如整页都含「搜索」）时把计划一次性吞掉。
+         */
+        const val MAX_GREEDY_ADVANCE = 3
 
         /** 退化计划里最多取几条完成字段做后置条件。 */
         const val MAX_POSTCONDITIONS = 3
@@ -2669,6 +3314,14 @@ class Orchestrator @Inject constructor(
 
         /** 连续多少次只拿到纯视觉观察就转人工；每次中间等待，给页面切换留时间。 */
         const val MAX_VISION_WAITS = 3
+
+        /**
+         * 连续多少次单步决策超时就转人工。
+         *
+         * 一次超时可能只是后端抖动：取消后重新观察再试是安全的（没有任何注入发生）。
+         * 连续两次说明当前后端在这条链路上已经不可用，继续烧预算不如交人。
+         */
+        const val MAX_STEP_TIMEOUTS = 2
 
         /** 纯视觉降级时的等待时长（毫秒）。 */
         const val VISION_WAIT_MS = 1000L
@@ -2736,6 +3389,17 @@ class Orchestrator @Inject constructor(
         val DELIVERY_PAGE_HINTS = listOf(
             "外卖", "购物车", "加购", "下单", "点单", "点一", "买", "结算", "待支付", "去支付",
             "order", "cart", "checkout", "waimai", "takeout",
+        )
+
+        /**
+         * 表示"停在支付/结算页"的目的地措辞。
+         *
+         * 这类说法里含「支付/payment」，但描述的是终点而不是要求代付；
+         * 判成资金任务会让「立即支付」被硬阻断，拿不到待支付页交接。
+         */
+        val PAYMENT_DESTINATION_HINTS = listOf(
+            "payment page", "payment step", "checkout", "checkout page",
+            "待支付页", "支付页", "结算页", "收银台", "提交订单页", "确认订单页",
         )
     }
 }

@@ -58,6 +58,7 @@ import com.neptine.mimir.ui.viewmodel.formatTime
 fun SettingsScreen(
     onOpenMemory: () -> Unit,
     onOpenCredentials: () -> Unit,
+    onOpenScheduled: () -> Unit,
 ) {
     val viewModel: SettingsViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -111,6 +112,7 @@ fun SettingsScreen(
             onRequestShizuku = viewModel::requestShizukuPermission,
             onOpenAccessibility = viewModel::openAccessibilitySettings,
             onOpenNotifications = onOpenNotifications,
+            onOpenResultBanner = viewModel::openResultBannerSettings,
         )
 
         ModelSection(
@@ -120,6 +122,8 @@ fun SettingsScreen(
             onSave = viewModel::saveModel,
             onTest = viewModel::testModel,
         )
+
+        AsrSection(state = state, onTest = viewModel::testAsr)
 
         SectionBlock(
             title = "记忆与凭据",
@@ -136,6 +140,12 @@ fun SettingsScreen(
                 meta = "Keystore 加密",
                 note = "只保存普通登录账号；模型只看得到凭据编号，正文由本地在当次授权后填充。",
                 onClick = onOpenCredentials,
+            )
+            MimirListRow(
+                title = "定时任务",
+                meta = "到点自动执行",
+                note = "按设定时间自动跑任务；会点亮屏幕但保持锁屏，任务内容不显示在锁屏上。",
+                onClick = onOpenScheduled,
             )
         }
 
@@ -158,7 +168,7 @@ fun SettingsScreen(
 
 /**
  * 功能：渲染权限三段
- * 参数：state 设置页状态；三个权限动作回调
+ * 参数：state 设置页状态；三个权限动作回调；完成提醒开关动作回调
  * 返回：无
  */
 @Composable
@@ -167,6 +177,7 @@ private fun PermissionSection(
     onRequestShizuku: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onOpenNotifications: () -> Unit,
+    onOpenResultBanner: () -> Unit,
 ) {
     SectionBlock(
         title = "权限",
@@ -189,9 +200,16 @@ private fun PermissionSection(
         PermissionRow(
             name = "通知",
             status = state.notifications,
-            detail = "人工交接与完成报告的唯一通道；不弹窗、不震动。",
+            detail = "人工交接与完成报告的唯一通道；会以横幅弹出提醒。",
             actionLabel = if (state.notifications == PermissionStatus.GRANTED) null else "去设置",
             onAction = onOpenNotifications,
+        )
+        PermissionRow(
+            name = "完成提醒",
+            status = state.resultBanner,
+            detail = "任务结束时把通知横幅弹到主屏（含锁屏）；需要系统里开启「任务结果」渠道的悬浮通知。",
+            actionLabel = if (state.resultBanner == PermissionStatus.GRANTED) null else "去开启",
+            onAction = onOpenResultBanner,
         )
     }
 }
@@ -319,6 +337,47 @@ private fun ModelSection(
             onDismiss = onDismissEdit,
             onSave = onSave,
         )
+    }
+}
+
+/**
+ * 功能：渲染端侧语音识别一段
+ * 参数：state 设置页状态；onTest 自检回调
+ * 返回：无
+ *
+ * 端侧模型没有"连通性"可测，这里的自检是加载一次并报耗时：演示前先点一下，
+ * 把"模型没打进包 / ABI 不匹配"提前暴露，而不是等上台按了麦克风才发现。
+ */
+@Composable
+private fun AsrSection(
+    state: SettingsUiState,
+    onTest: () -> Unit,
+) {
+    SectionBlock(
+        title = "语音识别",
+        modifier = Modifier.padding(top = MimirSpacing.xxl),
+        trailing = {
+            TextActionButton(
+                text = if (state.asrTesting) "自检中" else "自检",
+                onClick = onTest,
+                enabled = !state.asrTesting,
+            )
+        },
+    ) {
+        KeyValueRow(key = "引擎", value = "sherpa-onnx 2.0.1 · 端侧流式", mono = true)
+        KeyValueRow(key = "模型", value = "zipformer multi-zh-hans · int8", mono = true)
+        state.asrResult?.let { result ->
+            Text(
+                text = result,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (result.startsWith("加载失败")) {
+                    LocalMimirColors.current.coral
+                } else {
+                    LocalMimirColors.current.deepGreen
+                },
+                modifier = Modifier.padding(top = MimirSpacing.xs),
+            )
+        }
     }
 }
 

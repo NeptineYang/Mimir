@@ -73,6 +73,23 @@ internal class VirtualDisplayController(context: Context) {
     }
 
     /**
+     * 功能：销毁除 keepDisplayId 之外的所有屏
+     * 参数：keepDisplayId 需要保留的屏；-1 表示全部销毁
+     * 返回：销毁的屏数量
+     *
+     * 调用方（app 进程）重启后拿不到旧句柄，这些屏对它已经不可用，
+     * 留在系统里只会累积消耗虚拟屏资源。
+     */
+    fun reap(keepDisplayId: Int): Int {
+        var destroyed = 0
+        sessions.keys.filter { it != keepDisplayId }.forEach { id ->
+            sessions.remove(id)?.release()
+            destroyed++
+        }
+        return destroyed
+    }
+
+    /**
      * 功能：抓取一帧并编码为 WebP
      * 参数：displayId 目标屏；timeoutMs 取帧超时（毫秒）
      * 返回：WebP 字节；屏不存在、超时或 PixelCopy 失败时返回 null

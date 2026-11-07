@@ -7,6 +7,7 @@ import com.neptine.mimir.core.contract.MemoryStatus
 import com.neptine.mimir.core.contract.ObservationSnapshot
 import com.neptine.mimir.core.contract.Preference
 import com.neptine.mimir.core.contract.Procedure
+import com.neptine.mimir.core.contract.ProcedurePage
 import com.neptine.mimir.data.db.dao.MemoryDao
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -54,7 +55,7 @@ class RoomMemoryRetriever @Inject constructor(
         val versionCode = versions.versionCodeOf(snapshot.packageName)
 
         return candidates.mapNotNull { entity ->
-            val stored = ProcedureCodec.fromEntity(entity)
+            val stored = ProcedureCodec.fromEntity(entity, loadTree(entity.id))
             if (!isUsable(stored, now)) return@mapNotNull null
             val procedure = MemoryParameters.resolved(stored, parameters)
             val similarity = signatureSimilarity(stored.pageSignature, currentTexts)
@@ -74,14 +75,38 @@ class RoomMemoryRetriever @Inject constructor(
     }
 
     /**
-     * 功能：读取适用于某 App 的策略
+     * 功能：读取适用于某 App 的偏好
      * 参数：packageName 目标包名
-     * 返回：全局与 App 级策略；没有时为空列表
+     * 返回：全局与 App 级偏好；按置信度降序，最多 8 条
+     *
+     * 命中即累加计数：偏好是否真的被用上，目前只能靠"注入过"近似；
+     * 写失败不影响本次规划，记忆读路径不能因为记账把任务拖死。
      */
-    override suspend fun retrievePreferences(packageName: String): List<Preference> =
-        runCatching { dao.findPreferences(packageName) }
-            .getOrDefault(emptyList())
-            .map { ProcedureCodec.fromEntity(it) }
+    override suspend fun retrievePreferences(packageName: String): List<Preference> {
+        val rows = runCatching { dao.findPreferences(packageName) }.getOrDefault(emptyList())
+        if (rows.isEmpty()) return emptyList()
+        val hits = rows.take(MAX_PREFERENCES).map { ProcedureCodec.fromEntity(it) }
+        runCatching {
+            dao.bumpPreferenceHits(hits.map { it.id }, System.currentTimeMillis())
+        }
+        return hits
+    }
+
+    /**
+     * 功能：读取一条配方的树
+     * 参数：procedureId 配方标识
+     * 返回：按页面顺序排列的树；节点缺失时为空列表
+     *
+     * 每条候选查两次节点表：候选最多 2 条（MAX_HITS），这里不做批量优化；
+     * 批量取法留给编辑页，那里才是"一次要看几十条配方"的场景。
+     */
+    private suspend fun loadTree(procedureId: String): List<ProcedurePage> =
+        ProcedureTree.assemble(
+            pages = dao.findPages(procedureId),
+            actions = dao.findActions(procedureId),
+            anchorOf = ProcedureCodec::decodeAnchorOrNull,
+            slotsOf = ProcedureCodec::decodeSlots,
+        )
 
     /**
      * 功能：判断配方是否还有效
@@ -172,6 +197,9 @@ class RoomMemoryRetriever @Inject constructor(
     private companion object {
         /** 最多注入几条配方；§2.5.6 定的是 top-2。 */
         const val MAX_HITS = 2
+
+        /** 最多注入几条偏好：偏好是"经验"，太多会把规划 prompt 淹掉。 */
+        const val MAX_PREFERENCES = 8
 
         /** 页面签名相似度阈值；低于它说明页面结构已经变了（§2.5.4）。 */
         const val MIN_SIGNATURE_SIMILARITY = 0.60

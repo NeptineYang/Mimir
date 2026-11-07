@@ -5,12 +5,15 @@ import com.neptine.mimir.core.contract.ObservationSnapshot
 import com.neptine.mimir.core.contract.PlanStep
 import com.neptine.mimir.core.contract.PlanSubtask
 import com.neptine.mimir.core.contract.Preference
+import com.neptine.mimir.core.contract.PreferenceCategory
 import com.neptine.mimir.core.contract.TaskBudget
 import com.neptine.mimir.core.contract.TaskConstraints
 import com.neptine.mimir.core.contract.TaskPlan
 import com.neptine.mimir.core.contract.TaskSpec
 import com.neptine.mimir.data.config.ModelConfigRepository
 import com.neptine.mimir.data.remote.ChatMessage
+import com.neptine.mimir.data.remote.ChatOptions
+import com.neptine.mimir.data.remote.ChatUsage
 import com.neptine.mimir.data.remote.LlmClient
 import javax.inject.Inject
 import kotlinx.serialization.json.JsonElement
@@ -40,7 +43,7 @@ class Planner @Inject constructor(
     /**
      * 功能：把自然语言任务解析成 TaskSpec 的字段
      * 参数：inputText 用户原话；taskId 任务标识；launchablePackages 本机可启动的包名
-     * 返回：可用的 TaskSpec
+     * 返回：可用的 TaskSpec，以及本次调用的 token 用量（后端不返回时为 null）
      * 抛出：ModelUnavailableException 未配置后端；PlanParseException 输出不可解析
      *
      * 参数留空是刻意的：设计文档要求"参数不完整必须等参数确定后请求当次确认"，
@@ -50,7 +53,8 @@ class Planner @Inject constructor(
         inputText: String,
         taskId: String,
         launchablePackages: List<String>,
-    ): TaskSpec {
+        autoApproveL2a: Boolean = false,
+    ): Planned<TaskSpec> {
         val model = requireModel()
         val user = buildString {
             appendLine("用户任务：$inputText")
@@ -62,13 +66,18 @@ class Planner @Inject constructor(
             }
         }
 
-        val raw = call(model, SPEC_SYSTEM_PROMPT, user)
+        // 解析只做字段抽取，不需要长推理；用 low 档，避免每个任务开局白等 5 秒
+        val reply = call(
+            model, SPEC_SYSTEM_PROMPT, user,
+            reasoningEffort = SPEC_REASONING_EFFORT, maxTokens = SPEC_MAX_TOKENS,
+        )
+        val raw = reply.content
         val payload = LlmJson.extract(raw) ?: throw PlanParseException("任务解析输出不可读：${raw.take(RAW_LIMIT)}")
 
         val packageName = payload.string("package")
         val resolvedPackage = if (packageName in launchablePackages) packageName else ""
 
-        return TaskSpec(
+        return Planned(TaskSpec(
             taskId = taskId,
             taskType = payload.string("taskType").ifEmpty { "GENERAL" },
             packageName = resolvedPackage,
@@ -79,20 +88,23 @@ class Planner @Inject constructor(
             riskGrants = emptyList(),
             completionContract = completionOf(payload),
             budget = TaskBudget(),
-        )
+            // 定时任务的预设授权由创建方带进来：解析只是补全包名/参数，
+            // 不能顺手把"到点可自动批准 L2A"这个决定丢掉。
+            autoApproveL2a = autoApproveL2a,
+        ), reply.usage)
     }
 
     /**
      * 功能：把已确认的 TaskSpec 拆成结构化计划
      * 参数：spec 任务约束；preferences 策略类记忆；firstFrame 开局首帧观察
-     * 返回：版本为 1 的任务计划
+     * 返回：版本为 1 的任务计划，以及本次调用的 token 用量（后端不返回时为 null）
      * 抛出：ModelUnavailableException 未配置后端；PlanParseException 输出不可解析
      */
     suspend fun planTask(
         spec: TaskSpec,
         preferences: List<Preference>,
         firstFrame: ObservationSnapshot,
-    ): TaskPlan {
+    ): Planned<TaskPlan> {
         val user = buildString {
             appendLine("任务：${spec.inputText}")
             if (spec.taskType.isNotEmpty()) appendLine("任务类型：${spec.taskType}")
@@ -107,7 +119,10 @@ class Planner @Inject constructor(
                 appendLine("完成边界：${spec.completionContract.successBoundary}")
             }
             if (preferences.isNotEmpty()) {
-                appendLine("用户偏好：${preferences.joinToString("；") { it.content }}")
+                appendLine("用户偏好（经验，不是硬规则；与任务冲突时以用户本次指令为准）：")
+                preferences.forEach { preference ->
+                    appendLine("- [${preference.category.label()}] ${preference.content}")
+                }
             }
             appendLine("当前页面：${firstFrame.packageName} / ${firstFrame.activityName}")
             appendLine("页面上的可见元素（最多 20 个）：")
@@ -116,16 +131,17 @@ class Planner @Inject constructor(
             }
         }
 
-        val raw = call(requireModel(), PLAN_SYSTEM_PROMPT, user)
+        val reply = call(requireModel(), PLAN_SYSTEM_PROMPT, user)
+        val raw = reply.content
         val payload = LlmJson.extract(raw) ?: throw PlanParseException("计划输出不可读：${raw.take(RAW_LIMIT)}")
-        return parsePlan(payload, spec, version = 1)
+        return Planned(parsePlan(payload, spec, version = 1), reply.usage)
     }
 
     /**
      * 功能：受限重规划——在当前证据下重新生成计划
      * 参数：spec 任务约束；previous 被判定失效的旧计划；reason 触发原因；
      *       frame 触发时的观察
-     * 返回：版本递增的新计划；模型认为必须扩大范围/预算时为 null
+     * 返回：版本递增的新计划；模型认为必须扩大范围/预算时值为 null
      * 抛出：ModelUnavailableException 未配置后端
      *
      * 重规划只换"怎么做"，不换"允许做什么"：allowedPackages、参数、预算与授权全部沿用，
@@ -136,7 +152,7 @@ class Planner @Inject constructor(
         previous: TaskPlan,
         reason: String,
         frame: ObservationSnapshot,
-    ): TaskPlan? {
+    ): Planned<TaskPlan?> {
         val user = buildString {
             appendLine("任务：${spec.inputText}")
             if (spec.packageName.isNotEmpty()) appendLine("目标应用：${spec.packageName}")
@@ -159,10 +175,11 @@ class Planner @Inject constructor(
             }
         }
 
-        val raw = call(requireModel(), REPLAN_SYSTEM_PROMPT, user)
+        val reply = call(requireModel(), REPLAN_SYSTEM_PROMPT, user)
+        val raw = reply.content
         val payload = LlmJson.extract(raw) ?: throw PlanParseException("重规划输出不可读：${raw.take(RAW_LIMIT)}")
-        if (payload.string("give_up").isNotEmpty()) return null
-        return parsePlan(payload, spec, previous.version + 1)
+        if (payload.string("give_up").isNotEmpty()) return Planned(null, reply.usage)
+        return Planned(parsePlan(payload, spec, previous.version + 1), reply.usage)
     }
 
     /**
@@ -254,13 +271,15 @@ class Planner @Inject constructor(
     /**
      * 功能：发一次规划请求并取回复正文
      * 参数：model 后端；system 系统提示；user 用户文本
-     * 返回：模型回复正文
+     * 返回：模型回复正文与本次调用的 token 用量
      */
     private suspend fun call(
         model: com.neptine.mimir.data.config.ResolvedModel,
         system: String,
         user: String,
-    ): String {
+        reasoningEffort: String = REASONING_EFFORT,
+        maxTokens: Int = MAX_TOKENS,
+    ): PlannerReply {
         val response = llm.chat(
             baseUrl = model.baseUrl,
             apiKey = model.apiKey,
@@ -269,8 +288,14 @@ class Planner @Inject constructor(
                 ChatMessage(role = "system", content = system),
                 ChatMessage(role = "user", content = user),
             ),
+            // 规划要在没有界面的情况下拆步骤、写后置条件，值得比单步决策更强的推理；
+            // 但同样要设上限，否则一次规划的长尾会把整轮请求拖到超时。
+            options = ChatOptions(reasoningEffort = reasoningEffort, maxTokens = maxTokens),
         )
-        return response.choices.firstOrNull()?.message?.content.orEmpty()
+        return PlannerReply(
+            content = response.choices.firstOrNull()?.message?.content.orEmpty(),
+            usage = response.usage,
+        )
     }
 
     /**
@@ -316,6 +341,28 @@ class Planner @Inject constructor(
     }
 
     private companion object {
+        /**
+         * 计划生成与重规划的思考强度。
+         *
+         * 规划要在看不到界面的情况下拆步骤、写可核对的后置条件，判断质量直接影响后面
+         * 每一次动作；这里保留 high（默认 max 对规划收益有限但很贵），单步决策才降到 low。
+         */
+        const val REASONING_EFFORT = "high"
+
+        /** 规划输出上限：一份计划通常 1–2 KB，留足思考余量即可。 */
+        const val MAX_TOKENS = 4096
+
+        /**
+         * 任务解析的思考强度。
+         *
+         * resolveSpec 只是把一句话映射成包名/taskType/参数，不需要长推理链；
+         * 实测 high 档单次 ttfb 6.8–10.7 秒、输出 266–347 token，属于纯浪费。
+         */
+        const val SPEC_REASONING_EFFORT = "low"
+
+        /** 任务解析输出上限：一段几百字节的 JSON 足够。 */
+        const val SPEC_MAX_TOKENS = 512
+
         /** 送给模型的候选包名上限；整机几百个包名会挤爆上下文。 */
         const val MAX_PACKAGES = 120
 
@@ -332,6 +379,12 @@ class Planner @Inject constructor(
         const val RAW_LIMIT = 200
     }
 }
+
+/** 规划器一次调用的回复与用量；用量随结果一起交给上层落库。 */
+internal data class PlannerReply(val content: String, val usage: ChatUsage?)
+
+/** 规划器产出的结果与本次调用的用量。 */
+data class Planned<T>(val value: T, val usage: ChatUsage?)
 
 /** 规划输出不可解析。 */
 class PlanParseException(message: String) : IllegalStateException(message)
@@ -419,3 +472,16 @@ private val REPLAN_SYSTEM_PROMPT = """
    要进入没见过的页面就留空数组，不要猜译文或同义词。
 3. 从当前页面出发，不要假装已经完成了没做过的步骤。
 """.trimIndent()
+
+/**
+ * 功能：偏好类别的中文标签
+ * 参数：无（扩展函数）
+ * 返回：注入 prompt 用的短标签
+ */
+private fun PreferenceCategory.label(): String = when (this) {
+    PreferenceCategory.PLATFORM -> "平台"
+    PreferenceCategory.MERCHANT -> "常点"
+    PreferenceCategory.TONE -> "语气"
+    PreferenceCategory.ORDER_STYLE -> "点餐方式"
+    PreferenceCategory.GENERAL -> "经验"
+}

@@ -13,6 +13,7 @@ import com.neptine.mimir.agent.MemoryReverifier
 import com.neptine.mimir.agent.Orchestrator
 import com.neptine.mimir.data.db.dao.TaskDao
 import com.neptine.mimir.device.ActiveDisplayRegistry
+import com.neptine.mimir.service.schedule.ScheduledTaskRunner
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +49,9 @@ class AgentForegroundService : Service() {
     @Inject
     lateinit var memoryReverifier: MemoryReverifier
 
+    @Inject
+    lateinit var scheduledTaskRunner: ScheduledTaskRunner
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** 防止重复 startCommand 触发两轮队列循环。 */
@@ -75,6 +79,16 @@ class AgentForegroundService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
         val action = intent?.action
         val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
+        if (action == ACTION_RUN_SCHEDULED) {
+            // 定时任务不占队列锁：它要等整轮任务跑完，占锁会把后续「继续」与手动任务一起堵住。
+            // 它自己通过 TaskLauncher 创建任务，队列仍按普通路径消费。
+            val scheduledId = intent?.getStringExtra(EXTRA_SCHEDULED_ID)
+            scope.launch {
+                scheduledId?.let { runCatching { scheduledTaskRunner.run(it) } }
+                stopSelfResult(startId)
+            }
+            return START_STICKY
+        }
         if (action == ACTION_REVERIFY_MEMORY) {
             // 重验不排任务队列：队列锁会被整轮任务占住，排在后面要等十几分钟才有结果。
             // 它自带"副屏被占用就拒绝"的判断，与队列走同一条单屏约束。
@@ -168,12 +182,14 @@ class AgentForegroundService : Service() {
      * 任务页的强制打断据此直接取消它，不需要再经过前台服务（服务可能已被系统停掉）。
      */
     private suspend fun drainQueueLocked() {
-        // 副屏被"已完成任务的结果页"占着时，队列会一直取不到任务。
-        // 先尝试主动释放一次保留页，再进入正常排空循环。
-        if (activeDisplay.isOccupied()) {
-            runCatching { orchestrator.releaseRetainedResults() }
-        }
-        while (!activeDisplay.isOccupied()) {
+        while (true) {
+            if (activeDisplay.isOccupied()) {
+                // 只有在"确实还有任务在排队"时才牺牲结果页；队列为空就让结果页留到超时，
+                // 用户仍有机会点通知看结果。转人工任务的屏不能收，释放函数会拒绝并返回 false。
+                val waiting = runCatching { taskDao.findNextCreated() }.getOrNull() ?: break
+                if (!runCatching { orchestrator.releaseRetainedResults() }.getOrDefault(false)) break
+                android.util.Log.d("MimirAgent", "队列等待任务 ${waiting.taskId}，已释放保留结果页")
+            }
             val next = runCatching { taskDao.findNextCreated() }.getOrNull() ?: break
             android.util.Log.d("MimirAgent", "队列取任务 id=${next.taskId} 当前占用=${activeDisplay.isOccupied()}")
             runChild { orchestrator.run(next.taskId) }
@@ -273,6 +289,12 @@ class AgentForegroundService : Service() {
         /** 附加的配方标识。 */
         private const val EXTRA_PROCEDURE_ID = "procedure_id"
 
+        /** 定时任务标识。 */
+        private const val EXTRA_SCHEDULED_ID = "scheduledTaskId"
+
+        /** 定时任务触发动作。 */
+        private const val ACTION_RUN_SCHEDULED = "com.neptine.mimir.action.RUN_SCHEDULED_TASK"
+
         /**
          * 功能：启动执行服务
          * 参数：context 任意上下文
@@ -308,6 +330,16 @@ class AgentForegroundService : Service() {
             launch(context, ACTION_REVERIFY_MEMORY, null, procedureId)
 
         /**
+         * 功能：执行一条到点的定时任务
+         * 参数：context 任意上下文；scheduledId 定时任务标识
+         * 返回：无
+         *
+         * 由闹钟接收器调用；从 alarm 启动前台服务是后台启动限制的豁免场景。
+         */
+        fun runScheduled(context: Context, scheduledId: String) =
+            launch(context, ACTION_RUN_SCHEDULED, null, scheduledId = scheduledId)
+
+        /**
          * 功能：投递一次服务启动
          * 参数：context 任意上下文；action 请求动作；taskId 目标任务标识；
          *       procedureId 目标配方标识（仅重验使用）
@@ -316,12 +348,22 @@ class AgentForegroundService : Service() {
          * 系统拒绝后台启动前台服务时这里会失败，但任务行仍停在 NEED_HUMAN，
          * 界面上仍能看到真实状态，不把失败伪装成已处理。
          */
-        private fun launch(context: Context, action: String, taskId: String?, procedureId: String? = null) {
+        private fun launch(
+            context: Context,
+            action: String,
+            taskId: String?,
+            procedureId: String? = null,
+            scheduledId: String? = null,
+        ) {
             val intent = Intent(context, AgentForegroundService::class.java)
                 .setAction(action)
                 .putExtra(EXTRA_TASK_ID, taskId)
                 .putExtra(EXTRA_PROCEDURE_ID, procedureId)
+                .putExtra(EXTRA_SCHEDULED_ID, scheduledId)
             runCatching { ContextCompat.startForegroundService(context, intent) }
+                .onFailure {
+                    android.util.Log.e("MimirSchedule", "启动前台服务失败 action=$action", it)
+                }
         }
     }
 }

@@ -61,7 +61,7 @@ class Guard @Inject constructor(
 
         ActionKind.LAUNCH -> assessLaunch(spec, action)
         ActionKind.TEXT -> assessTextInput(action, snapshot)
-        ActionKind.TAP -> assessTap(action, snapshot)
+        ActionKind.TAP -> assessTap(spec, action, snapshot)
         ActionKind.CREDENTIAL -> assessCredential(action, snapshot)
     }
 
@@ -168,10 +168,14 @@ class Guard @Inject constructor(
 
     /**
      * 功能：判定点击
-     * 参数：action 动作；snapshot 当前观察
+     * 参数：spec 任务约束；action 动作；snapshot 当前观察
      * 返回：判定结果
      */
-    private fun assessTap(action: AgentAction.Do, snapshot: ObservationSnapshot): GuardDecision {
+    private fun assessTap(
+        spec: TaskSpec,
+        action: AgentAction.Do,
+        snapshot: ObservationSnapshot,
+    ): GuardDecision {
         val target = targetTextOf(action, snapshot)
         // 一次性遮挡先按分类裁决：只有分类器给出的安全关闭入口可以直接点；
         // 高风险按钮（同意/授权/更新/下载…）即使在可关闭的广告里也不借道放行（§1.6.1）。
@@ -244,6 +248,17 @@ class Guard @Inject constructor(
         if (isPaymentActionLabel(target)) {
             return GuardDecision(RiskLevel.L2B, false, "目标「$target」是支付动作标签，硬阻断")
         }
+        // 用户原话就是"发消息/回复"时，消息发送按钮属于任务范围内的动作：
+        // 再要求一次授权等于把已经明确的指令重新问一遍（微信/DeepSeek 实测）。
+        // 转账/红包/金额类任务不走这条，那个「发送」不是消息。
+        val sendTarget = SEND_MESSAGE_TARGETS.any { target.lowercase().contains(it) }
+        if (sendTarget && isExplicitMessageSend(spec)) {
+            return GuardDecision(
+                RiskLevel.L1,
+                true,
+                "用户原话明确要求发送消息，目标「$target」是消息发送入口，按任务范围直接执行",
+            )
+        }
         matchLevel(target, AUTHORIZABLE_KEYWORDS)?.let { keyword ->
             return GuardDecision(
                 RiskLevel.L2A,
@@ -308,6 +323,36 @@ class Guard @Inject constructor(
     }
 
     /**
+     * 功能：判断目标是否为"只剩付款"的按钮
+     * 参数：target 目标文本
+     * 返回：命中的关键词；不是付款按钮时为 null
+     *
+     * 与 L2B 判定共用一套词，但这里只取资金类：验证码、密码、滑块这些仍然走原来的硬阻断，
+     * 不能被"待支付页交接"分支当成任务正常收尾。
+     */
+    fun paymentOnlyKeyword(target: String): String? {
+        matchLevel(target, PAYMENT_ONLY_KEYWORDS)?.let { return it }
+        return if (isPaymentActionLabel(target)) "支付" else null
+    }
+
+    /**
+     * 功能：任务是否明确要求"发送消息/回复"
+     * 参数：spec 任务约束
+     * 返回：明确要求为 true
+     *
+     * 先排除转账/红包/金额类任务：那些任务里的「发送」是资金动作，仍走授权/人工。
+     * taskType 命中 SEND_MESSAGE/CHAT/REPLY，或用户原话里出现发送/回复意图，都算明确要求。
+     */
+    private fun isExplicitMessageSend(spec: TaskSpec): Boolean {
+        val text = spec.inputText.lowercase()
+        if (PAYMENT_INTENT_KEYWORDS.any { text.contains(it) }) return false
+        val type = spec.taskType.uppercase()
+        // ASK_AI 也是"把一句话交给对话 App"：DeepSeek 实测任务类型就是 ASK_AI
+        val typeHit = listOf("SEND_MESSAGE", "CHAT", "REPLY", "ASK", "QUESTION").any { type.contains(it) }
+        return typeHit || SEND_INTENT_KEYWORDS.any { text.contains(it) }
+    }
+
+    /**
      * 功能：在文本里找第一个命中的关键词
      * 参数：text 待检查文本；keywords 关键词表
      * 返回：命中的关键词；未命中为 null
@@ -351,6 +396,25 @@ class Guard @Inject constructor(
             "提交订单", "确认下单", "立即购买", "立即抢购", "确认支付订单",
             "发送", "发布", "提交", "删除", "移除", "清空", "注销", "解绑", "订阅", "开通会员",
         )
+
+        /** 消息发送按钮的文案；命中这些且任务明确要求发消息时才跳过二次授权。 */
+        val SEND_MESSAGE_TARGETS = listOf("发送", "回复", "send", "reply")
+
+        /** 只剩付款动作的按钮文案；点餐/下单类任务走到这里就交接给本人，不再代点。 */
+        val PAYMENT_ONLY_KEYWORDS = listOf(
+            "立即支付", "确认支付", "去支付", "收银台", "支付密码", "免密支付", "指纹支付", "面容支付",
+        )
+
+        /** 用户原话里"让我发消息"的意图词（英文统一小写后匹配）。 */
+        val SEND_INTENT_KEYWORDS = listOf(
+            "发送", "发消息", "发给", "发一条", "发个消息", "回消息", "回复", "告诉",
+            // 提问类任务（DeepSeek/其它问答 App）点「发送」也是在执行用户明确要求
+            "问", "提问", "询问", "咨询", "ask", "question", "prompt", "query",
+            "send", "message", "reply", "tell",
+        )
+
+        /** 出现这些词的任务属于资金场景，「发送」不能跳过授权。 */
+        val PAYMENT_INTENT_KEYWORDS = listOf("转账", "付款", "支付", "红包", "金额", "收款")
 
         /** 通用确认文案；必须结合页面语义才能定级。 */
         val GENERIC_CONFIRM_TEXTS = setOf("确定", "确认", "继续", "好的", "同意")

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 // app 模块构建脚本。
 // 分层以包边界表达（设计文档 §1.2）：core / device / observation / agent / data / service / ui。
 // 刻意不写 kotlin { compilerOptions }：AGP 9 内置 Kotlin 下 jvmTarget 取 compileOptions.targetCompatibility。
@@ -8,6 +10,17 @@ plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
 }
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.isFile) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseSigning = keystorePropertiesFile.isFile &&
+    listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all {
+        !keystoreProperties.getProperty(it).isNullOrBlank()
+    }
 
 android {
     namespace = "com.neptine.mimir"
@@ -22,11 +35,35 @@ android {
         targetSdk = 36
         versionCode = 12
         versionName = "0.2.1"
+
+        // sherpa-onnx 的 AAR 带全部 ABI，只留演示机（arm64）与 AVD（x86_64）两套。
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    androidResources {
+        // 模型是 .onnx 二进制，压缩后只多耗解压时间与内存；不压直接 mmap。
+        noCompress.add("onnx")
+    }
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -82,6 +119,13 @@ dependencies {
     // Shizuku：api 用于 binder 调用，provider 提供 <provider> 组件（authority 由 server 端拼成 <applicationId>.shizuku）。
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+
+    // 端侧语音识别：sherpa-onnx 官方预编译 AAR（含 JNI 与 onnxruntime）。
+    // 体积约 49 MB，按仓库约定不入库，由 scripts/fetch-asr-assets.sh 落地到 app/libs。
+    implementation(files("libs/sherpa-onnx-2.0.1.aar"))
+
+    // 纯逻辑单测：预设授权边界（L2A 可放行、L2B 不可）。
+    testImplementation(libs.junit)
 
     // 隐藏 API 只作编译期符号：运行期由 boot classpath 的 framework 实现接管，
     // 打进 APK 会引入重复类风险（见 hidden-api/build.gradle.kts 注释）。

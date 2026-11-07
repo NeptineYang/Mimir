@@ -3,7 +3,6 @@ package com.neptine.mimir.data.memory
 import com.neptine.mimir.core.contract.Anchor
 import com.neptine.mimir.core.contract.ObservationSnapshot
 import com.neptine.mimir.core.contract.Procedure
-import com.neptine.mimir.core.contract.ProcedureStep
 
 /**
  * 参数槽位替换（设计文档 §2.5.2 / §2.5.5）。
@@ -99,12 +98,14 @@ object MemoryParameters {
             precondition = procedure.precondition.map { anchor ->
                 fillAnchor(anchor, parameters, emptyMap()) ?: anchor
             },
-            steps = procedure.steps.map { step ->
-                ProcedureStep(
-                    actionKind = step.actionKind,
-                    anchor = fillAnchor(step.anchor, parameters, step.parameterSlots),
-                    pagePath = step.pagePath,
-                    parameterSlots = step.parameterSlots,
+            // 参数槽位挂在动作节点上；按页面重写整棵树，steps 作为派生视图会自动跟上。
+            pages = procedure.pages.map { page ->
+                page.copy(
+                    actions = page.actions.map { action ->
+                        action.copy(
+                            anchor = fillAnchor(action.anchor, parameters, action.parameterSlots),
+                        )
+                    },
                 )
             },
         )

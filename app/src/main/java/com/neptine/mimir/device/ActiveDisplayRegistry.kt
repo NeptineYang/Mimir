@@ -53,6 +53,16 @@ class ActiveDisplayRegistry @Inject constructor() {
     fun current(): DisplayHandle? = handle
 
     /**
+     * 功能：读取当前副屏归属的任务标识
+     * 参数：无
+     * 返回：归属任务；没有副屏时为 null
+     *
+     * 队列释放保留页时按归属判断"这块屏该不该收"，不能只信一个单独记录的 taskId：
+     * 用户点过通知、结果页被搬走之后，那个记录会过期。
+     */
+    fun owner(): String? = ownerTaskId
+
+    /**
      * 功能：取出活动副屏并清空登记
      * 参数：无
      * 返回：被取出的句柄；没有时为 null

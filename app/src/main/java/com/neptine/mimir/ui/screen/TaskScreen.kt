@@ -4,6 +4,7 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -44,11 +47,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.neptine.mimir.core.contract.TaskState
 import com.neptine.mimir.ui.component.MimirComposer
@@ -62,22 +70,24 @@ import com.neptine.mimir.ui.component.TextActionButton
 import com.neptine.mimir.ui.theme.LocalMimirColors
 import com.neptine.mimir.ui.theme.MimirRadius
 import com.neptine.mimir.ui.theme.MimirSpacing
+import com.neptine.mimir.ui.viewmodel.EngineFix
 import com.neptine.mimir.ui.viewmodel.TaskRow
 import com.neptine.mimir.ui.viewmodel.TaskViewModel
-import com.neptine.mimir.ui.viewmodel.formatTime
+import com.neptine.mimir.ui.viewmodel.formatElapsed
 import com.neptine.mimir.ui.voice.VoiceStatus
 import com.neptine.mimir.ui.voice.rememberVoiceInputController
+import kotlinx.coroutines.delay
 
 /**
  * 功能：任务页——展示进行中任务与进度，并用一句话创建新任务
- * 参数：onOpenTakeover 打开某任务的接管页
+ * 参数：onOpenTakeover 打开某任务的接管页；onOpenSettings 跳到设置页配模型
  * 返回：无
  *
  * 页面只保留三块：页眉、引擎状态、进行中任务；输入区在最下方。
  * 终态记录在历史页（02），这里只回答"现在有哪些任务还在跑或等人"。
  */
 @Composable
-fun TaskScreen(onOpenTakeover: (String) -> Unit) {
+fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
     val viewModel: TaskViewModel = hiltViewModel()
     val input by viewModel.input.collectAsStateWithLifecycle()
     val engine by viewModel.status.collectAsStateWithLifecycle()
@@ -90,14 +100,33 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit) {
     // 从设置页回来时重新读一遍权限与模型配置，避免顶部状态停在旧结论
     LaunchedEffect(Unit) { viewModel.refreshStatus() }
 
+    // 用户可能在系统设置里刚开完无障碍/授权，回到前台要立刻反映出来，
+    // 否则页面还停在 OFFLINE，看起来像没生效（真机复验时踩到）。
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.refreshStatus() }
+
     // 按下麦克风时的已有文本；识别结果接在它后面，避免覆盖用户已经打好的内容。
     var draftBeforeVoice by remember { mutableStateOf("") }
-    // pointerInput 的块只创建一次，直接读 input 会拿到首次组合的旧值，因此用 State 保鲜。
-    val latestInput = rememberUpdatedState(input)
 
-    val voice = rememberVoiceInputController { text ->
-        viewModel.onInputChange(draftBeforeVoice + text)
+    // 输入框自己持有 TextFieldValue：语音回填与发送后清空都是外部写入，
+    // 必须由这里把光标挪到句尾，否则新字会从句子中间插进去。
+    var composer by remember { mutableStateOf(TextFieldValue("")) }
+    LaunchedEffect(input) {
+        if (input != composer.text) {
+            composer = TextFieldValue(input, selection = TextRange(input.length))
+        }
     }
+    // 造一个和当前输入框同步的引用，供 pointerInput 里的手势块读取最新值。
+    val latestInput = rememberUpdatedState(composer.text)
+
+    val voice = rememberVoiceInputController(
+        // 中间结果与最终结果都接在按下时的草稿后面：识别是流式的，两路写法必须一致，
+        // 否则松手那一刻会出现「半句 + 整句」叠在一起。
+        onText = { text -> viewModel.onInputChange(draftBeforeVoice + text) },
+        onPartial = { text -> viewModel.onInputChange(draftBeforeVoice + text) },
+    )
+
+    // 模型首次加载约 4 秒。页面一出现就在后台加载，把「按下 → 出字」的等待压到只剩录音与解码。
+    LaunchedEffect(Unit) { voice.warmUp() }
 
     // 授权结果只决定下一次按下能否收音；这里不自动开始录音，避免用户没按住就开麦。
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -121,8 +150,16 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit) {
 
         // 等宽标记只放 ASCII，中文说明单独一段：Space Mono 没有中文字形，
         // 混排并加字距会让这段字面明显散开，而且单行标签还会被省略号截断。
+        //
+        // 离线时整行可点：Shizuku 授权/无障碍/模型配置三类缺项各有各的去处，
+        // 只写一句「去设置页处理」等于让用户自己找。
         Row(
-            modifier = Modifier.padding(top = MimirSpacing.xs),
+            modifier = Modifier
+                .padding(top = MimirSpacing.xs)
+                .clip(RoundedCornerShape(MimirRadius.sm))
+                .clickable(enabled = !engine.online) {
+                    if (engine.fix == EngineFix.MODEL) onOpenSettings() else viewModel.fixEngine()
+                },
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm),
         ) {
@@ -135,13 +172,23 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.muted,
             )
+            if (!engine.online) {
+                Text(
+                    text = "去修复",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.coral,
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(MimirSpacing.xxl))
 
         MimirComposer(
-            value = input,
-            onValueChange = viewModel::onInputChange,
+            value = composer,
+            onValueChange = {
+                composer = it
+                viewModel.onInputChange(it.text)
+            },
             placeholder = "例如：在美团点一份黄焖鸡米饭，少辣",
             trailing = {
                 VoiceButton(
@@ -163,11 +210,10 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit) {
                 )
                 Spacer(modifier = Modifier.size(MimirSpacing.sm))
                 SendButton(
-                    enabled = input.isNotBlank(),
+                    enabled = composer.text.isNotBlank(),
                     onClick = {
-                        if (voice.status == VoiceStatus.LISTENING) {
-                            voice.stop()
-                        }
+                        // 收尾是幂等的：没在收音时调用不会有副作用
+                        voice.stop()
                         // 发送后收起键盘并释放焦点：下面的"进行中"列表要立刻可见，
                         // 否则用户刚发的任务进度会被输入法挡住（真机实测）。
                         keyboard?.hide()
@@ -260,6 +306,7 @@ private fun ActiveTaskRow(
 ) {
     val colors = LocalMimirColors.current
     val state = row.state
+    val elapsed = rememberElapsed(row.createdAt, row.finishedAt)
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -267,6 +314,21 @@ private fun ActiveTaskRow(
                 .padding(top = MimirSpacing.md),
             verticalAlignment = Alignment.Top,
         ) {
+            // 最近一步的画面：文字说不清"它现在停在哪一页"，缩略图可以。
+            // 没有留存画面（刚入队/纯文本步）时不占位，避免卡片出现空洞。
+            row.thumb?.let { thumb ->
+                Image(
+                    bitmap = thumb,
+                    contentDescription = "当前页面",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .width(50.dp)
+                        .height(110.dp)
+                        .clip(RoundedCornerShape(MimirRadius.sm))
+                        .background(colors.softStone),
+                )
+                Spacer(modifier = Modifier.size(MimirSpacing.sm))
+            }
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(MimirSpacing.xs),
@@ -313,7 +375,7 @@ private fun ActiveTaskRow(
         )
         Text(
             text = "步 ${row.stepCount} / ${row.maxSteps} · 模型 ${row.budgetModelCalls} / ${row.maxModelCalls} · " +
-                formatTime(row.createdAt),
+                "已用 ${formatElapsed(elapsed)}",
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted,
             modifier = Modifier.padding(top = MimirSpacing.xs),
@@ -337,6 +399,26 @@ private fun ActiveTaskRow(
         }
         MimirHairline()
     }
+}
+
+/**
+ * 功能：按秒刷新的已用时长
+ * 参数：startedAt 任务创建时间；finishedAt 结束时间（未结束为 null）
+ * 返回：已用毫秒数
+ *
+ * 只在未结束时每秒刷新；终态任务用结束时间算一次就够，不必留一个空转的定时器。
+ */
+@Composable
+private fun rememberElapsed(startedAt: Long, finishedAt: Long?): Long {
+    var now by remember(startedAt) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt, finishedAt) {
+        if (finishedAt != null) return@LaunchedEffect
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+    return ((finishedAt ?: now) - startedAt).coerceAtLeast(0)
 }
 
 /**
@@ -485,9 +567,11 @@ private fun VoiceHint(
     message: String?,
 ) {
     val colors = LocalMimirColors.current
-    val text = when {
-        status == VoiceStatus.LISTENING -> "LISTENING · 松开结束"
-        message != null -> message
+    val hint = when {
+        status == VoiceStatus.PREPARING -> "PREPARING · 正在加载端侧模型" to colors.muted
+        status == VoiceStatus.RECOGNIZING -> "识别中" to colors.muted
+        status == VoiceStatus.LISTENING -> "LISTENING · 松开结束" to colors.slate
+        message != null -> message to colors.coral
         else -> null
     } ?: return
 
@@ -499,8 +583,8 @@ private fun VoiceHint(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         MonoLabel(
-            text = text,
-            color = if (status == VoiceStatus.LISTENING) colors.slate else colors.coral,
+            text = hint.first,
+            color = hint.second,
             uppercase = status == VoiceStatus.LISTENING,
         )
     }

@@ -50,6 +50,43 @@ data class ProcedureStep(
 )
 
 /**
+ * 配方树的一个动作节点（第四层）。
+ *
+ * @property id 节点标识；用户删改与排序都按它定位
+ * @property actionKind 动作类型
+ * @property title 用户可读的动作名，默认取锚点文本
+ * @property anchor 执行前只校验这一级锚点
+ * @property parameterSlots 参数槽位占位名到取值的映射
+ */
+data class ProcedureAction(
+    val id: String,
+    val actionKind: ActionKind,
+    val title: String,
+    val anchor: Anchor?,
+    val parameterSlots: Map<String, String> = emptyMap(),
+)
+
+/**
+ * 配方树的一个页面节点（第三层）。
+ *
+ * App 与任务是配方的字段（第一、二层），页面与动作才是树的节点；
+ * UI 把四层一起展示，但存储上只需这两级——层级再深就变成"通用图"，检索与编辑都会失控。
+ *
+ * @property id 节点标识
+ * @property title 页面名，默认取 Activity 简名，用户可改
+ * @property pagePath 页面标识（Activity 名）；同一 Activity 内的多段用序号区分
+ * @property signature 页面静态文本集合；用于判断"这一页有没有变"
+ * @property actions 该页面上的动作，按执行顺序
+ */
+data class ProcedurePage(
+    val id: String,
+    val title: String,
+    val pagePath: String?,
+    val signature: List<String> = emptyList(),
+    val actions: List<ProcedureAction> = emptyList(),
+)
+
+/**
  * 配方记忆。
  *
  * @property id 唯一标识
@@ -59,7 +96,7 @@ data class ProcedureStep(
  * @property category 人的分类标签，不参与检索
  * @property title 配方名
  * @property precondition 入口前置条件锚点
- * @property steps 步骤数组
+ * @property pages 配方树：页面 → 动作；App 与任务是本对象的字段，构成四层
  * @property postcondition 后置条件描述
  * @property pageSignature 规范化静态文本集合，用于结构相似度比较
  * @property source 来源
@@ -80,7 +117,7 @@ data class Procedure(
     val category: String,
     val title: String,
     val precondition: List<Anchor>,
-    val steps: List<ProcedureStep>,
+    val pages: List<ProcedurePage>,
     val postcondition: List<String>,
     val pageSignature: List<String>,
     val source: MemorySource,
@@ -98,24 +135,79 @@ data class Procedure(
      * 只用于"不同 task_id 才计数"的去重（§2.5.5），不参与检索、不进 prompt、不导出。
      */
     val lastTaskId: String? = null,
-)
+) {
+
+    /**
+     * 扁平步骤视图：由 [pages] 派生，供检索、参数填充与旧导出格式使用。
+     *
+     * 存储真值只有树；steps 是只读投影，不允许单独修改——否则同一份配方会出现两个版本。
+     */
+    val steps: List<ProcedureStep>
+        get() = pages.flatMap { page ->
+            page.actions.map { action ->
+                ProcedureStep(
+                    actionKind = action.actionKind,
+                    anchor = action.anchor,
+                    pagePath = page.pagePath,
+                    parameterSlots = action.parameterSlots,
+                )
+            }
+        }
+}
 
 /**
- * 策略记忆。
+ * 偏好类别（设计文档 §5.6）。
+ *
+ * 固定枚举而不是自由文本：类别决定注入时的分组与排序，也让"这条偏好该不该影响这次任务"
+ * 有可判断的依据；自由文本最后一定会退化成一堆同义标签。
+ */
+enum class PreferenceCategory {
+    /** 平台选择：看视频用 B 站而不是抖音。 */
+    PLATFORM,
+
+    /** 地点与常点店：公司附近常点哪家、常点什么。 */
+    MERCHANT,
+
+    /** 语气与口头禅：发消息时的称呼、语气、签名。 */
+    TONE,
+
+    /** 点餐方式：拼好饭、先领券、默认少辣。 */
+    ORDER_STYLE,
+
+    /** 其它经验。 */
+    GENERAL,
+}
+
+/**
+ * 偏好记忆。
  *
  * @property id 唯一标识
  * @property scope 作用域包名；为空表示全局
- * @property title 标题
- * @property content 正文
- * @property source 来源
+ * @property category 类别；决定注入分组
+ * @property subject 主体/场景：地点、联系人、任务域（VIDEO / FOOD / CHAT）；为空表示通用
+ * @property title 人读标题
+ * @property content 注入 Planner 的自然语言描述
+ * @property value 结构化值（平台名、店名、口味、语气关键词）；用于后续匹配与去重
+ * @property confidence 置信度：手写 1.0，任务后确认 0.9，用户可调
+ * @property source 来源：USER_WRITTEN / USER_CONFIRMED
+ * @property status 状态：ACTIVE / DISABLED
+ * @property hitCount 被注入次数
+ * @property lastUsedAt 上次注入时间（毫秒）
  * @property createdAt 创建时间戳（毫秒）
  */
 data class Preference(
     val id: String,
     val scope: String?,
+    val category: PreferenceCategory,
+    val subject: String?,
     val title: String,
     val content: String,
+    val value: String,
+    val confidence: Double,
     val source: MemorySource,
+    val status: MemoryStatus,
+    val hitCount: Int,
+    val lastUsedAt: Long,
     val createdAt: Long,
 )
 
@@ -124,6 +216,9 @@ data class Preference(
  *
  * USER_WRITTEN 豁免版本系数与时间衰减，但仍走主路径断言——
  * 人的判断不该被机器衰减，但人的判断也会过期。
+ *
+ * USER_TAUGHT 表示"用户在一次真实任务后确认"：比手写低一档置信度（0.9），
+ * 因为它带着那次任务的上下文，未必是长期偏好。
  */
 enum class MemorySource {
     AUTO,

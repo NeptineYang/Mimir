@@ -2,6 +2,7 @@ package com.neptine.mimir.ui.screen
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -13,10 +14,13 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,11 +31,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.neptine.mimir.core.contract.RiskLevel
@@ -47,6 +53,7 @@ import com.neptine.mimir.ui.theme.LocalMimirColors
 import com.neptine.mimir.ui.theme.MimirRadius
 import com.neptine.mimir.ui.theme.MimirSpacing
 import com.neptine.mimir.ui.viewmodel.AuditRow
+import com.neptine.mimir.ui.viewmodel.LocalWriteResult
 import com.neptine.mimir.ui.viewmodel.PreviewFrame
 import com.neptine.mimir.ui.viewmodel.TakeoverViewModel
 
@@ -94,6 +101,9 @@ fun TakeoverScreen(onBack: () -> Unit) {
     val steps by viewModel.steps.collectAsStateWithLifecycle()
     val replayIndex by viewModel.replayIndex.collectAsStateWithLifecycle()
     val replayFrame by viewModel.replayFrame.collectAsStateWithLifecycle()
+    val localText by viewModel.localText.collectAsStateWithLifecycle()
+    val writeResult by viewModel.writeResult.collectAsStateWithLifecycle()
+    val writing by viewModel.writing.collectAsStateWithLifecycle()
     val colors = LocalMimirColors.current
 
     // 页面可见期间才轮询取帧；离开页面立即停，避免持续占用 binder 与解码资源
@@ -118,6 +128,7 @@ fun TakeoverScreen(onBack: () -> Unit) {
             .fillMaxSize()
             .background(colors.canvas)
             .statusBarsPadding()
+            .imePadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = MimirSpacing.page),
     ) {
@@ -330,6 +341,21 @@ fun TakeoverScreen(onBack: () -> Unit) {
             )
         }
 
+        // 接管档专用：主屏打字、写入副屏，紧贴预览。
+        // 虚拟屏上弹不出可见键盘，输入法也不会跟着触控转发过去；"人工输入"缺的
+        // 就是这条把文字送进副屏焦点控件的通道（验证码那类场景的唯一出路）。
+        if (takeover) {
+            SectionBlock(title = "输入", modifier = Modifier.padding(top = MimirSpacing.lg)) {
+                LocalInputRow(
+                    value = localText,
+                    onValueChange = viewModel::onLocalTextChange,
+                    onWrite = viewModel::writeLocalText,
+                    writing = writing,
+                    result = writeResult,
+                )
+            }
+        }
+
         if (!takeover) {
             Row(
                 modifier = Modifier
@@ -462,6 +488,68 @@ fun TakeoverScreen(onBack: () -> Unit) {
 
         Spacer(modifier = Modifier.height(MimirSpacing.huge))
     }
+}
+
+/**
+ * 功能：渲染接管页的本地输入框
+ * 参数：value 当前文本；onValueChange 文本变化回调；onWrite 写入副屏；
+ *       writing 是否正在写入；result 上一次写入结果
+ * 返回：无
+ *
+ * 输入框在主屏，用的是用户自己的输入法：文字先落在本机，再由 app 写到副屏的
+ * 焦点控件，副屏不需要可见键盘。内容只存在内存里，写完立即清空。
+ */
+@Composable
+private fun LocalInputRow(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onWrite: () -> Unit,
+    writing: Boolean,
+    result: LocalWriteResult?,
+) {
+    val colors = LocalMimirColors.current
+    val shape = RoundedCornerShape(MimirRadius.md)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = MimirSpacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .border(1.dp, colors.borderLight, shape)
+                .padding(horizontal = MimirSpacing.md, vertical = MimirSpacing.sm),
+        ) {
+            if (value.isEmpty()) {
+                Text(
+                    text = "在主屏打字，写入副屏输入框",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = colors.muted,
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.ink),
+                cursorBrush = SolidColor(colors.ink),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Spacer(modifier = Modifier.size(MimirSpacing.sm))
+        TextActionButton(
+            text = if (writing) "写入中…" else "写入副屏",
+            onClick = onWrite,
+            enabled = value.isNotBlank() && !writing,
+        )
+    }
+    Text(
+        text = result?.message ?: "先在预览里点一下目标输入框；写入后自己点「验证 / 提交」",
+        style = MaterialTheme.typography.bodySmall,
+        color = if (result?.ok == false) colors.coral else colors.muted,
+        modifier = Modifier.padding(top = MimirSpacing.sm),
+    )
 }
 
 /**

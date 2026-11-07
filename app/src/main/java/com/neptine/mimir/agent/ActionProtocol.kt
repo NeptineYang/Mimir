@@ -11,6 +11,7 @@ import com.neptine.mimir.core.contract.ObservationSnapshot
 import com.neptine.mimir.core.contract.UiElement
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
@@ -41,7 +42,11 @@ object ActionProtocol {
         val action = payload["action"]?.jsonPrimitive?.content?.lowercase()
             ?: throw ActionParseException("缺少 action 字段")
 
-        return when (action) {
+        // 「边做边声明」：动作与步骤完成写在同一个 JSON 里，省掉一次纯声明的视觉请求
+        // （实测 36% 的调用只用来推进游标）。是否真的推进仍由本地后置条件复核决定。
+        val declaresStepDone = payload["step_done"]?.jsonPrimitive?.booleanOrNull == true
+
+        val parsed = when (action) {
             "tap" -> tapAction(payload, snapshot)
             "input" -> inputAction(payload, snapshot)
             "credential" -> credentialAction(payload, snapshot)
@@ -63,6 +68,14 @@ object ActionProtocol {
                 reason = payload["reason"]?.jsonPrimitive?.content.orEmpty(),
             )
             else -> throw ActionParseException("未知动作 $action")
+        }
+        return if (declaresStepDone && parsed is AgentAction.Do) {
+            parsed.copy(
+                stepDone = true,
+                stepSummary = payload["summary"]?.jsonPrimitive?.contentOrNull,
+            )
+        } else {
+            parsed
         }
     }
 
@@ -255,8 +268,11 @@ object ActionProtocol {
      * 功能：由元素构造目标指纹
      * 参数：element 目标元素
      * 返回：树模式指纹，锚点级别按可用信息取 A1/A2/A3
+     *
+     * internal 而非 private：本地改投输入目标时也要用同一套指纹构造，
+     * 两处各写一份迟早会漂移。
      */
-    private fun fingerprintOf(element: UiElement): TargetFingerprint {
+    internal fun fingerprintOf(element: UiElement): TargetFingerprint {
         val level = when {
             !element.resourceId.isNullOrEmpty() -> AnchorLevel.A1
             element.text.isNotEmpty() || element.contentDescription.isNotEmpty() -> AnchorLevel.A2

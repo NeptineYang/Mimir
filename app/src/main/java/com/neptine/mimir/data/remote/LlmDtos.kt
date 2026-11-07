@@ -66,9 +66,14 @@ data class ChatReply(
 /**
  * token 用量；审计里记录的 image_tokens 最终以此处实测值为准（§2.3.1）。
  *
+ * 前缀缓存命中量没有统一字段：智谱/DeepSeek 用顶层的 `prompt_cache_hit_tokens`，
+ * OpenAI 兼容后端多放在 `prompt_tokens_details.cached_tokens`，两个都收着，缺省为 0。
+ *
  * @property promptTokens 输入 token
  * @property completionTokens 输出 token
  * @property totalTokens 合计 token
+ * @property promptCacheHitTokens 顶层缓存命中字段
+ * @property promptTokensDetails 嵌套的输入明细
  */
 @Serializable
 data class ChatUsage(
@@ -78,4 +83,19 @@ data class ChatUsage(
     val completionTokens: Int = 0,
     @SerialName("total_tokens")
     val totalTokens: Int = 0,
+    @SerialName("prompt_cache_hit_tokens")
+    val promptCacheHitTokens: Int = 0,
+    @SerialName("prompt_tokens_details")
+    val promptTokensDetails: PromptTokensDetails? = null,
+) {
+    /** 命中前缀缓存的输入 token；后端没给这个字段时为 0，不代表没命中。 */
+    val cachedTokens: Int
+        get() = maxOf(promptCacheHitTokens, promptTokensDetails?.cachedTokens ?: 0)
+}
+
+/** 输入 token 明细（OpenAI 兼容后端用它报缓存命中）。 */
+@Serializable
+data class PromptTokensDetails(
+    @SerialName("cached_tokens")
+    val cachedTokens: Int = 0,
 )

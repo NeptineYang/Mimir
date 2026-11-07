@@ -17,6 +17,7 @@ import com.neptine.mimir.device.DeviceTransport
 import com.neptine.mimir.ui.onboarding.Onboarding
 import com.neptine.mimir.ui.permission.PermissionReader
 import com.neptine.mimir.ui.permission.PermissionStatus
+import com.neptine.mimir.ui.voice.OfflineAsrEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -82,6 +83,13 @@ data class SettingsUiState(
     val shizuku: PermissionStatus,
     val accessibility: PermissionStatus,
     val notifications: PermissionStatus,
+    /**
+     * 结果通知的"悬浮通知"是否可用。
+     *
+     * 与"通知"权限分开：权限只保证通知能进通知栏，
+     * 这一项才决定任务完成时横幅会不会真的弹到屏幕上。
+     */
+    val resultBanner: PermissionStatus,
     val capabilities: List<CapabilityRow>,
     val model: ModelSummary?,
     val modelLoaded: Boolean,
@@ -103,6 +111,10 @@ data class SettingsUiState(
     val launchableCount: Int = 0,
     /** 可启动列表是否真的读到了；读不到时矩阵行只能标"未知"，不能标"不可用"。 */
     val launchabilityKnown: Boolean = false,
+    /** 端侧语音模型是否正在自检。 */
+    val asrTesting: Boolean = false,
+    /** 端侧语音模型自检结论。 */
+    val asrResult: String? = null,
 )
 
 /**
@@ -126,6 +138,7 @@ class SettingsViewModel @Inject constructor(
     private val probingFlow = MutableStateFlow(false)
     private val guideFlow = MutableStateFlow(Onboarding.needsGuide(context))
     private val matrixFlow = MutableStateFlow(MatrixState())
+    private val asrFlow = MutableStateFlow(AsrTestState())
 
     /**
      * Shizuku 授权结果的回调；只在实例存活期间注册，onCleared 时移除。
@@ -148,6 +161,7 @@ class SettingsViewModel @Inject constructor(
                 shizuku = current.shizuku,
                 accessibility = current.accessibility,
                 notifications = current.notifications,
+                resultBanner = current.resultBanner,
                 capabilities = capabilities.map { it.toRow() },
                 model = modelSection.summary,
                 modelLoaded = modelSection.loaded,
@@ -163,12 +177,15 @@ class SettingsViewModel @Inject constructor(
             )
         },
         matrixFlow,
-    ) { base, matrix ->
+        asrFlow,
+    ) { base, matrix, asr ->
         base.copy(
             appMatrix = matrix.items,
             appMatrixLoading = matrix.loading,
             launchableCount = matrix.launchableCount,
             launchabilityKnown = matrix.launchabilityKnown,
+            asrTesting = asr.testing,
+            asrResult = asr.result,
         )
     }
         .flowOn(Dispatchers.Default)
@@ -179,6 +196,7 @@ class SettingsViewModel @Inject constructor(
                 shizuku = permissionFlow.value.shizuku,
                 accessibility = permissionFlow.value.accessibility,
                 notifications = permissionFlow.value.notifications,
+                resultBanner = permissionFlow.value.resultBanner,
                 capabilities = emptyList(),
                 model = null,
                 modelLoaded = false,
@@ -341,6 +359,19 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * 功能：打开结果通知渠道的设置页并刷新权限快照
+     * 参数：无
+     * 返回：无
+     *
+     * 跳页前先刷新一次：用户可能在系统里改完开关再回来，
+     * 页面停留期间的状态必须能反映真实渠道状态，否则提示会一直挂着"去开启"。
+     */
+    fun openResultBannerSettings() {
+        permissions.openResultChannelSettings()
+        refreshPermissions()
+    }
+
+    /**
      * 功能：读取模型后端配置
      * 参数：无
      * 返回：无
@@ -447,11 +478,39 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 功能：对端侧语音模型做一次加载自检
+     * 参数：无
+     * 返回：无
+     *
+     * 与模型后端自检同理：把"模型没打进包里 / 原生库与 ABI 不匹配"与"识别得不准"分开。
+     * 加载要数秒，放 IO 线程执行，主线程只收结论。
+     */
+    fun testAsr() {
+        if (asrFlow.value.testing) return
+        asrFlow.value = AsrTestState(testing = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            val text = OfflineAsrEngine.selfCheck(context)
+            asrFlow.value = AsrTestState(testing = false, result = text)
+        }
+    }
+
     override fun onCleared() {
         runCatching { Shizuku.removeRequestPermissionResultListener(shizukuListener) }
         super.onCleared()
     }
 }
+
+/**
+ * 端侧语音模型的自检状态。
+ *
+ * @property testing 是否正在加载
+ * @property result 自检结论；未跑过为 null
+ */
+private data class AsrTestState(
+    val testing: Boolean = false,
+    val result: String? = null,
+)
 
 /**
  * 设置页里"模型后端"一段的完整状态。

@@ -45,6 +45,15 @@ class ShizukuDisplayPort(private val shell: ShizukuShell) : DisplayPort {
     }
 
     /**
+     * 功能：回收本进程之外遗留的虚拟屏
+     * 参数：keepDisplayId 需要保留的屏；-1 表示全部销毁
+     * 返回：销毁的屏数量
+     */
+    override suspend fun reapOrphans(keepDisplayId: Int): Int = withContext(Dispatchers.IO) {
+        shell.require().reapDisplays(keepDisplayId)
+    }
+
+    /**
      * 功能：抓取一帧副屏画面（原生尺寸，WebP）
      * 参数：handle 建屏句柄；timeoutMs 取帧超时
      * 返回：图像帧；取帧失败时抛异常，由上层降级到下一级兜底

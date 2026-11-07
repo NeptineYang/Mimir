@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.viewmodel
 
+import androidx.compose.ui.graphics.ImageBitmap
 import com.neptine.mimir.agent.TaskSpecCodec
 import com.neptine.mimir.core.contract.RiskLevel
 import com.neptine.mimir.core.contract.TaskBudget
@@ -38,6 +39,8 @@ data class TaskRow(
     val createdAt: Long,
     /** 结束时间戳（毫秒）；未结束为空。 */
     val finishedAt: Long?,
+    /** 最近一步的动作后画面；用于任务卡缩略图。 */
+    val thumb: ImageBitmap? = null,
 )
 
 /** 审计步骤的展示模型；只保留回放页真正渲染的字段。 */
@@ -86,6 +89,14 @@ data class AuditRow(
     val screenshotAfter: String?,
     /** 副屏代次。 */
     val displayGeneration: Long,
+    /** 本步合计耗时（毫秒）；0 表示没有计时。 */
+    val totalMs: Long = 0,
+    /** 观察段耗时（毫秒）。 */
+    val observeMs: Long = 0,
+    /** 决策段耗时（毫秒）。 */
+    val decideMs: Long = 0,
+    /** 注入与判定段耗时（毫秒）。 */
+    val actMs: Long = 0,
 )
 
 /** 时间格式：月-日 时:分；跨天时也不会太长，审计列表能一屏放下。 */
@@ -98,6 +109,20 @@ private val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-
  */
 fun formatTime(millis: Long): String =
     Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).format(TIME_FORMATTER)
+
+/**
+ * 功能：把已用时长格式化成一句话
+ * 参数：millis 时长（毫秒）
+ * 返回：秒 / 分秒 / 时分 三档短句
+ */
+fun formatElapsed(millis: Long): String {
+    val seconds = (millis / 1000).coerceAtLeast(0)
+    return when {
+        seconds < 60 -> "${seconds} 秒"
+        seconds < 3600 -> "${seconds / 60} 分 ${seconds % 60} 秒"
+        else -> "${seconds / 3600} 小时 ${seconds % 3600 / 60} 分"
+    }
+}
 
 /**
  * 功能：安全解析任务状态
@@ -119,10 +144,10 @@ fun parseRiskLevel(raw: String): RiskLevel? =
 
 /**
  * 功能：把任务实体转成展示模型
- * 参数：无（扩展函数）
+ * 参数：thumb 最近一步的画面缩略图，由调用方解码后传入
  * 返回：TaskRow
  */
-fun TaskEntity.toRow(): TaskRow {
+fun TaskEntity.toRow(thumb: ImageBitmap? = null): TaskRow {
     val budget = budgetOf(this)
     return TaskRow(
         taskId = taskId,
@@ -138,6 +163,7 @@ fun TaskEntity.toRow(): TaskRow {
         maxModelCalls = budget.maxModelCalls,
         createdAt = createdAt,
         finishedAt = finishedAt,
+        thumb = thumb,
     )
 }
 
@@ -151,6 +177,21 @@ fun TaskEntity.toRow(): TaskRow {
  */
 private fun budgetOf(task: TaskEntity): TaskBudget =
     runCatching { TaskSpecCodec.decode(task.specJson).budget }.getOrDefault(TaskBudget())
+
+/**
+ * 功能：判断这条历史任务能否"再打开结果"
+ * 参数：无（扩展函数）
+ * 返回：可能还留有结果页时为 true
+ *
+ * 只对三种"做到过"的终态开放：DONE / DONE_READBACK / COMPLETED_UNVERIFIED。
+ * 失败与放弃没有可交付的页面，给入口只会打开一个与任务无关的 App 首页。
+ */
+fun TaskRow.canReopenResult(): Boolean =
+    packageName.isNotEmpty() && state in setOf(
+        TaskState.DONE,
+        TaskState.DONE_READBACK,
+        TaskState.COMPLETED_UNVERIFIED,
+    )
 
 /**
  * 功能：把审计实体转成展示模型
@@ -180,4 +221,8 @@ fun AuditEntity.toRow(): AuditRow = AuditRow(
     screenshotBefore = screenshotBefore,
     screenshotAfter = screenshotAfter,
     displayGeneration = displayGeneration,
+    totalMs = totalMs,
+    observeMs = observeMs,
+    decideMs = decideMs,
+    actMs = actMs,
 )

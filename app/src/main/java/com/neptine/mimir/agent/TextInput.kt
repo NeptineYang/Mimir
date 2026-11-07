@@ -46,10 +46,15 @@ class TextInput @Inject constructor(
 
     /**
      * 功能：向副屏的目标输入框写入文本
-     * 参数：handle 建屏句柄；action 输入动作（含目标指纹与正文）
+     * 参数：handle 建屏句柄；action 输入动作（含目标指纹与正文）；
+     *       visionOnly 当前观察是否只有截图（控件树不可读）
      * 返回：写入是否被接受
      */
-    suspend fun type(handle: DisplayHandle, action: AgentAction.Do): Boolean {
+    suspend fun type(
+        handle: DisplayHandle,
+        action: AgentAction.Do,
+        visionOnly: Boolean = false,
+    ): Boolean {
         if (action.kind != ActionKind.TEXT) return false
         val text = action.text.orEmpty()
         if (text.isEmpty()) return false
@@ -59,15 +64,25 @@ class TextInput @Inject constructor(
         // 先按坐标点一下把输入框聚焦，再用无障碍直接写文本。比逐字符注键可靠得多——
         // 按键链路会丢 SHIFT，大写与 ? 之类的符号会退化（DeepSeek 实测 "France?" → "france/"）。
         if (typeByAccessibilityAfterPoint(handle, action, text)) return logged(text, "SET_TEXT(坐标)")
+        // 任务期输入法已经由 drive 接管成 Mimir 的无键盘 IME：此时 commitText 走
+        // InputConnection，是自绘输入框最认的一条通路，也不会切全局输入法。
+        // 必须排在粘贴之前：自绘输入框没有可编辑节点时，"粘贴键被系统接受"只代表
+        // 按键发出去了，不代表文本落地（DeepSeek/美团实测页面完全没变，
+        // 却按成功继续，模型只好反复重输）。先走 IME，粘贴只留作回退。
+        if (transport.ime.isActive() && typeByIme(handle, action, text)) {
+            return logged(text, if (visionOnly) "输入法(纯视觉)" else "输入法")
+        }
         // 粘贴通路：SET_TEXT 被自绘输入框拒绝、按键注入又不支持中文时，
-        // 写剪贴板 + 注入 KEYCODE_PASTE 是唯一不切输入法的通路。
+        // 写剪贴板 + 注入 KEYCODE_PASTE 是不切输入法的最后通路。
         if (typeByPaste(handle, action, text)) return logged(text, "粘贴")
         // 控件树被封锁（微信这类）时没有可写的节点，ACTION_SET_TEXT 必然失败：
         // 退到逐字符按键注入。它不碰输入法，只受"字符能否用按键表达"限制。
         if (typeByKeyEvents(handle, action, text)) return logged(text, "按键")
-        val ime = typeByIme(text)
-        logged(text, if (ime) "输入法" else "无（全部路径失败）")
-        return ime
+        if (!visionOnly && !transport.ime.isActive() && typeByIme(handle, action, text)) {
+            return logged(text, "输入法")
+        }
+        logged(text, "无（全部路径失败）")
+        return false
     }
 
     /**
@@ -230,11 +245,22 @@ class TextInput @Inject constructor(
 
     /**
      * 功能：走自带输入法提交文本
-     * 参数：text 正文
-     * 返回：是否提交成功；P5 未通过时直接 false
+     * 参数：handle 建屏句柄；action 输入动作；text 正文
+     * 返回：是否提交成功；既没通过 P5、输入法也不在自己手上时直接 false
+     *
+     * P5 的硬门针对的是"为了输入去改用户默认输入法"。任务执行期 drive 已经把默认输入法
+     * 接管成无键盘的自带 IME，这时 commitText 不会带来新的主屏影响，不需要再过 P5。
      */
-    private suspend fun typeByIme(text: String): Boolean {
-        if (!p5Passed()) return false
+    private suspend fun typeByIme(
+        handle: DisplayHandle,
+        action: AgentAction.Do,
+        text: String,
+    ): Boolean {
+        if (!p5Passed() && !transport.ime.isActive()) return false
+        // commitText 只作用于当前输入连接：先把目标点聚焦，否则输入法拿不到连接
+        val focusPoint = action.targetFingerprint?.bounds?.center ?: pointOf(handle, action) ?: return false
+        transport.inputs.tap(handle, focusPoint, FOCUS_PRESS_MS)
+        delay(FOCUS_SETTLE_MS)
         if (!transport.ime.select()) return false
         return runCatching { transport.ime.commitText(text) }.isSuccess
     }

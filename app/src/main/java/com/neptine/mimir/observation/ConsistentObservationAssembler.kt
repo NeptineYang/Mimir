@@ -47,7 +47,8 @@ class ConsistentObservationAssembler(
         val numbered = numberer.number(before.elements)
         // 树"能读到但一个元素都没有"是封锁型 App 的典型形态（微信就是：窗口在、children=0）。
         // 这种情况不能当成"页面是空的"，否则模型只能干等；改用 OCR 补一份元素表，
-        // 同时把通道降级成 VISION_ONLY —— 元素是识别出来的字，写入仍然不可用。
+        // 同时把通道降级成 VISION_ONLY —— 元素是识别出来的字，控件级写入不可用，
+        // 文本输入由任务期接管的无键盘输入法（commitText）兜底。
         val blockedTree = numbered.isEmpty()
         val ocrBranch = if (blockedTree) ocrElementsOf(captured.image, handle) else emptyList()
 
@@ -126,21 +127,32 @@ class ConsistentObservationAssembler(
         if (lines.isEmpty()) return emptyList()
         val scaleX = handle.spec.width.toFloat() / image.width
         val scaleY = handle.spec.height.toFloat() / image.height
+        android.util.Log.d(
+            OCR_TAG,
+            "OCR 行数=${lines.size} 图像=${image.width}x${image.height} " +
+                "原生=${handle.spec.width}x${handle.spec.height} scaleX=$scaleX scaleY=$scaleY",
+        )
         return lines
             .sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
             .take(ElementNumberer.MAX_ELEMENTS)
             .mapIndexed { position, line ->
+                val bounds = Bounds(
+                    left = (line.bounds.left * scaleX).toInt(),
+                    top = (line.bounds.top * scaleY).toInt(),
+                    right = (line.bounds.right * scaleX).toInt(),
+                    bottom = (line.bounds.bottom * scaleY).toInt(),
+                )
+                // 与 MimirTap 日志对照：OCR 认为哪块区域是文字、实际点到了哪里
+                android.util.Log.d(
+                    OCR_TAG,
+                    "OCR 元素 #${position + 1}「${line.text}」图像=${line.bounds} 原生=$bounds",
+                )
                 UiElement(
                     index = position + 1,
                     className = OCR_CLASS_NAME,
                     text = line.text,
                     contentDescription = "",
-                    bounds = Bounds(
-                        left = (line.bounds.left * scaleX).toInt(),
-                        top = (line.bounds.top * scaleY).toInt(),
-                        right = (line.bounds.right * scaleX).toInt(),
-                        bottom = (line.bounds.bottom * scaleY).toInt(),
-                    ),
+                    bounds = bounds,
                     // OCR 只知道"这里有字"，不知道能不能点：交给动作后的元素变化去证伪。
                     clickable = false,
                     editable = false,
@@ -151,6 +163,9 @@ class ConsistentObservationAssembler(
     private companion object {
         /** OCR 元素的类名标记，审计与 prompt 用它区分"识别出来的字"和"真实控件"。 */
         const val OCR_CLASS_NAME = "OcrText"
+
+        /** OCR 诊断日志标签；与 MimirTap 对照可确认元素包围盒和实际落点。 */
+        const val OCR_TAG = "MimirOcr"
 
         /** 坐标映射规则版本：模型图像尺寸 → 原生副屏尺寸的换算前提（§2.3.1）。 */
         const val COORDINATE_MAP_VERSION = "native-540x1200-v1"

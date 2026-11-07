@@ -8,6 +8,7 @@ import com.neptine.mimir.data.db.dao.AuditDao
 import com.neptine.mimir.data.db.dao.ConfigDao
 import com.neptine.mimir.data.db.dao.MemoryDao
 import com.neptine.mimir.data.db.dao.RiskGrantDao
+import com.neptine.mimir.data.db.dao.ScheduledTaskDao
 import com.neptine.mimir.data.db.dao.TaskDao
 import dagger.Module
 import dagger.Provides
@@ -34,6 +35,11 @@ object DatabaseModule {
                 MimirDatabase.MIGRATION_1_2,
                 MimirDatabase.MIGRATION_2_3,
                 MimirDatabase.MIGRATION_3_4,
+                MimirDatabase.MIGRATION_4_5,
+                MimirDatabase.MIGRATION_5_6,
+                MimirDatabase.MIGRATION_6_7,
+                MimirDatabase.MIGRATION_7_8,
+                MimirDatabase.MIGRATION_8_9,
             )
             .build()
 
@@ -76,6 +82,14 @@ object DatabaseModule {
      */
     @Provides
     fun provideMemoryDao(database: MimirDatabase): MemoryDao = database.memoryDao()
+
+    /**
+     * 功能：提供定时任务表访问口
+     * 参数：database 数据库实例
+     * 返回：ScheduledTaskDao 实例
+     */
+    @Provides
+    fun provideScheduledTaskDao(database: MimirDatabase): ScheduledTaskDao = database.scheduledTaskDao()
 
     /**
      * 功能：提供配置与设备能力表访问口

@@ -10,6 +10,8 @@ import com.neptine.mimir.core.contract.TaskSpec
 import com.neptine.mimir.data.config.ModelConfigRepository
 import com.neptine.mimir.data.db.entity.AuditEntity
 import com.neptine.mimir.data.remote.ChatMessage
+import com.neptine.mimir.data.remote.ChatOptions
+import com.neptine.mimir.data.remote.ChatUsage
 import com.neptine.mimir.data.remote.LlmClient
 import com.neptine.mimir.data.remote.encodeImageDataUrl
 import javax.inject.Inject
@@ -47,12 +49,19 @@ class Executor @Inject constructor(
         var lastError: Exception? = null
         var lastRaw = ""
         repeat(MAX_ATTEMPTS) { attemptIndex ->
-            val raw = llm.chat(model.baseUrl, model.apiKey, model.model, messages)
-                .choices.firstOrNull()?.message?.content
-                .orEmpty()
+            val response = llm.chat(
+                model.baseUrl,
+                model.apiKey,
+                model.model,
+                messages,
+                // 单步动作是"看一眼、点一下"的短决策：降到 low 就够，默认 max 会把
+                // 一次点按拖成 3 分钟；输出上限只留动作 JSON 的余量。
+                ChatOptions(reasoningEffort = REASONING_EFFORT, maxTokens = MAX_TOKENS),
+            )
+            val raw = response.choices.firstOrNull()?.message?.content.orEmpty()
             lastRaw = raw
             runCatching { ActionProtocol.parse(raw, request.snapshot) }
-                .onSuccess { return DecideResult(it, raw, attemptIndex + 1) }
+                .onSuccess { return DecideResult(it, raw, attemptIndex + 1, response.usage) }
                 .onFailure { lastError = it as? Exception ?: Exception(it) }
         }
         // 把原始输出带进错误信息：解析失败时审计里没有任何动作行，
@@ -81,6 +90,25 @@ class Executor @Inject constructor(
 
         /** 同 prompt 的最大尝试次数（首次 + 1 次重试）。 */
         const val MAX_ATTEMPTS = 2
+
+        /**
+         * 单步决策的思考强度。
+         *
+         * GLM-5.3 系列强制思考、不能关闭，只能降档。默认 max 会让"点一下搜索框"也走完整
+         * 推理链：真机实测单步 ttfb 9–207 秒、响应体 23–38 KB 而动作只有几十字节。
+         * low 足够处理"看元素表选一个动作"，复杂步骤靠 replan 与驳回信息兜底。
+         */
+        const val REASONING_EFFORT = "low"
+
+        /**
+         * 单步输出上限：动作 JSON 只有几十字节，但思考 token 也算在内。
+         *
+         * 取值要挡住"思考被截断 → content 为空 → 解析失败重试"的假故障，所以留了余量：
+         * low 档通常几百 token 就收敛，1536 足够；相比默认的 128K 上限已经收得很紧。
+         * **这个数值还没在 GLM-5.3-FLASH 上实测**，首次联调时要看 `MimirNet: 用量`
+         * 里的 out 是否贴到上限——贴到就说明截断了，需要抬高。
+         */
+        const val MAX_TOKENS = 1536
     }
 }
 
@@ -126,6 +154,8 @@ data class DecideResult(
     val action: AgentAction,
     val rawOutput: String,
     val attempts: Int,
+    /** 本次决策的 token 用量；后端不返回时为 null，记账记 0。 */
+    val usage: ChatUsage? = null,
 )
 
 /** 模型后端不可用（未配置或缺密钥）。 */

@@ -12,6 +12,10 @@ import javax.inject.Inject
  *
  * 单步 prompt 由六部分组成：动作协议、TaskSpec 全局约束、当前计划步骤、近 3 步历史、
  * 元素编号表、截图。元素表比截图更便宜也更准，因此"树定几何"既是精度手段也是成本手段。
+ *
+ * 段落顺序不是随意排的：稳定段（系统提示 → 任务约束 → 当前步骤 → 配方 → 凭据）在前，
+ * 每步都变的段（历史 → 元素表 → 截图）在后。这样同一计划步骤内的多次调用共享同一段前缀，
+ * 后端若支持前缀缓存就能命中；反过来把历史插在中间，会把稳定前缀从中间截断。
  */
 class PromptBuilder @Inject constructor() {
 
@@ -23,11 +27,14 @@ class PromptBuilder @Inject constructor() {
     fun build(request: ExecutorRequest): PromptPayload = PromptPayload(
         systemPrompt = SYSTEM_PROMPT,
         userText = buildString {
+            // 段落顺序按"变化频率从低到高"排列，这是给前缀缓存留的条件：
+            // 系统提示 + 任务约束 + 当前步骤在同一计划步骤内逐字不变，命中缓存的部分越长越好；
+            // 历史与元素表每一步都在变，放最后，不让它们把前面的稳定段落切碎。
             appendTaskSpec(request)
             appendPlanStep(request)
-            appendHistory(request.recentSteps)
             appendMemories(request)
             appendCredentials(request)
+            appendHistory(request.recentSteps)
             appendElements(request)
         },
         image = request.snapshot.image,
@@ -99,13 +106,28 @@ class PromptBuilder @Inject constructor() {
             val action = step.actionKind.ifEmpty { "无动作" }
             // 输入动作要把正文写出来：只写「TEXT → CONFIRMED」时，模型不知道刚才输入了什么，
             // 真机上会以为没写进去而重复 input（文字被叠加成两遍）。
-            val target = if (step.actionKind == "TEXT") {
-                typedTextOf(step.modelOutput).orEmpty().let { if (it.isEmpty()) "" else "「$it」" }
-            } else {
-                step.targetText?.let { "「$it」" }.orEmpty()
+            val target = when {
+                step.actionKind == "TEXT" ->
+                    typedTextOf(step.modelOutput).orEmpty().let { if (it.isEmpty()) "" else "「$it」" }
+                !step.targetText.isNullOrEmpty() -> "「${step.targetText}」"
+                // 坐标点击没有目标文本：把上一动作的参数带上，模型才知道哪个坐标已经点过无效，
+                // 否则「TAP → NO_EFFECT」看不出点在哪，真机上会连续重试同一片区域直到判卡死。
+                else -> step.modelOutput.orEmpty().take(ACTION_HINT_LIMIT)
+                    .replace('\n', ' ')
+                    .let { if (it.isEmpty()) "" else " $it" }
             }
             val outcome = step.outcome ?: step.decision
-            appendLine("- 第${step.stepIndex}步 $action$target → $outcome")
+            // 驳回/拦下的原因必须回给模型：只写「STEP_REJECTED」或「INVALID_TARGET」，
+            // 它知道失败了却不知道该怎么改，真机上会换个位置继续撞同一堵墙。
+            val reason = if (outcome in REASONED_OUTCOMES) {
+                step.reviewReason.orEmpty().take(REASON_HINT_LIMIT)
+            } else {
+                ""
+            }
+            appendLine(
+                "- 第${step.stepIndex}步 $action$target → $outcome" +
+                    if (reason.isEmpty()) "" else "：$reason",
+            )
         }
         appendLine()
     }
@@ -123,10 +145,16 @@ class PromptBuilder @Inject constructor() {
         appendLine("[已知操作经验]（仅供参考，必须与当前界面核对）")
         request.memories.forEach { hit ->
             val procedure = hit.procedure
-            val path = procedure.steps
-                .mapNotNull { it.anchor?.text ?: it.anchor?.contentDescription }
-                .filter { it.isNotEmpty() }
-                .joinToString(" → ")
+            // 按页面分组展示：模型需要的是"在哪一页点什么"，平铺的动作序列会把
+            // 跨页动作混成一条路径，到了多页流程里反而误导。
+            val path = procedure.pages.joinToString(" → ") { page ->
+                val actions = page.actions
+                    .mapNotNull { it.anchor?.text ?: it.anchor?.contentDescription }
+                    .filter { it.isNotEmpty() }
+                    .take(MAX_ACTIONS_PER_PAGE_IN_PROMPT)
+                    .joinToString("/")
+                if (actions.isEmpty()) page.title else "${page.title}: $actions"
+            }
             val attempts = procedure.successCount + procedure.failCount
             val stat = if (attempts == 0) {
                 "尚未验证"
@@ -201,7 +229,11 @@ class PromptBuilder @Inject constructor() {
             return
         }
         if (snapshot.ocrElements.isNotEmpty()) {
-            appendLine("（以下元素由截图 OCR 识别得到，只有文字与位置，没有真实控件；只能点，不能输入文本）")
+            appendLine("（以下元素由截图 OCR 识别得到，只有文字与位置；可直接点元素编号，也可 input 正文）")
+            appendLine(
+                "纯视觉下坐标要落在这些文字元素上才有效，盲点空白/图标会被拒绝；" +
+                    "找不到目标就输出 wait/back/replan，不要连续猜坐标。",
+            )
         }
         snapshot.elements.forEach { appendLine(elementLine(it)) }
         if (snapshot.overflowCount > 0) {
@@ -250,6 +282,8 @@ class PromptBuilder @Inject constructor() {
             if (element.clickable) add("可点击")
             if (element.editable) add("可输入")
             if (element.password) add("密码框")
+            // OCR 元素没有真实控件，但文字位置本身就是可点目标；标出来免得模型去猜坐标
+            if (simpleClass == OCR_SIMPLE_CLASS) add("可点(OCR)")
         }.joinToString("/")
         val bounds = element.bounds
         return "#${element.index} [$simpleClass] ${label.ifEmpty { "(无文本)" }} " +
@@ -260,6 +294,24 @@ class PromptBuilder @Inject constructor() {
 
 /** 从模型输出里提取 input 正文的正则（JSON 字符串只允许转义后的引号/反斜杠）。 */
 private val TYPED_TEXT_PATTERN = Regex("\"text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+
+/** 最近步骤里回显动作参数的长度上限：坐标点击没有目标文本时靠它区分点位。 */
+private const val ACTION_HINT_LIMIT = 60
+
+/** 记忆注入时每个页面最多展示几个动作；页面名已经给出定位，完整复述只会挤占元素表。 */
+private const val MAX_ACTIONS_PER_PAGE_IN_PROMPT = 4
+
+/** 这些结果的原因对下一步有指导意义，历史里要带回给模型。 */
+private val REASONED_OUTCOMES = setOf(
+    "STEP_REJECTED", "INVALID_TARGET", "BLIND_TAP", "BLOCKED", "DUPLICATE_TEXT",
+    "STEP_DONE_WEAK_REJECTED",
+)
+
+/** 历史里回显失败原因的长度上限，避免把证据长句整段塞回 prompt。 */
+private const val REASON_HINT_LIMIT = 90
+
+/** OCR 元素的类名标记（与 ConsistentObservationAssembler 对齐）。 */
+private const val OCR_SIMPLE_CLASS = "OcrText"
 
 /**
  * 渲染后的 prompt。
@@ -307,8 +359,10 @@ private val SYSTEM_PROMPT = """
      {"action":"input","point":{"x":..,"y":..},"text":".."}，系统会先点这个坐标再键入。
    - 元素表里带文字的输入框（那一行的文本就是已输入内容）：**同样用 input + point**，
      不要用 input element——OCR 元素没有真实控件节点，写不进去；也不要 tap 之后再 input。
-6. 当前步骤的完成判据已经满足时，输出 step_done，不要为了"多看一眼"继续浏览其它页面；
-   这是最后一步时也用 step_done，系统会自动进入验证。
+6. 当前步骤的完成判据已经满足、而且这一下动作就是最后一步时，**把声明写在同一个 JSON 里**：
+   {"action":"tap","element":<编号>,"step_done":true,"summary":"<这一步做了什么>"}。
+   页面已经是完成态、不需要再动作时，才单独输出 {"action":"step_done","summary":"..."}。
+   不要为了"多看一眼"继续浏览其它页面；这是最后一步时同样处理，系统会自动进入验证。
 7. 出现开屏广告、活动弹窗时，只点「跳过」「关闭」「以后再说」把这次遮挡关掉，再继续原任务；
    权限申请、隐私协议、登录、更新等遮挡一律不要点「允许/同意/立即更新」，输出 wait 或 finish 等用户处理。
 8. 同一个动作最多重复两次；第二次仍没有让界面变化，就**换一种动作类型**（例如从 tap 换成 input、
@@ -319,4 +373,7 @@ private val SYSTEM_PROMPT = """
     支付密码、短信验证码、银行卡、人脸/指纹等身份验证一律不要用 credential，改交人工。
 11. [最近步骤] 里已经出现「TEXT「<文字>」→ CONFIRMED」时，说明那段文字已经写进去了。
     如果本步的完成判据就是这段文字，直接输出 step_done，**不要再次 input**——重复输入会把文字叠加成两遍。
+12. 备注、口味、忌口这类弹窗里如果已经有现成标签（「少放辣」「不吃辣」「不吃香菜」等），
+    **优先点语义匹配的标签**，标签点一下就生效；没有匹配标签时再 input。自绘备注框经常读不回正文，
+    input 写不进去时不要反复重试同一句。
 """.trimIndent()

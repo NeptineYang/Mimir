@@ -14,6 +14,7 @@ import com.neptine.mimir.data.db.entity.ProcedureEntity
 import com.neptine.mimir.data.memory.MemoryAnchorAssertions
 import com.neptine.mimir.data.memory.MemoryParameters
 import com.neptine.mimir.data.memory.ProcedureCodec
+import com.neptine.mimir.data.memory.ProcedureTree
 import com.neptine.mimir.device.ActiveDisplayRegistry
 import com.neptine.mimir.device.DeviceTransport
 import com.neptine.mimir.observation.ObservationAssembler
@@ -149,7 +150,15 @@ class MemoryReverifier @Inject constructor(
             return unavailable(procedureId, "无障碍服务未连接，无法读取页面")
         }
 
-        val procedure = ProcedureCodec.fromEntity(entity)
+        val procedure = ProcedureCodec.fromEntity(
+            entity,
+            ProcedureTree.assemble(
+                pages = memoryDao.findPages(entity.id),
+                actions = memoryDao.findActions(entity.id),
+                anchorOf = ProcedureCodec::decodeAnchorOrNull,
+                slotsOf = ProcedureCodec::decodeSlots,
+            ),
+        )
         val values = slotsOf(procedure) + taskParametersOf(procedure)
 
         var handle: DisplayHandle? = null

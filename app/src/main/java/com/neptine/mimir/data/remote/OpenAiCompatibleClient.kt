@@ -1,13 +1,15 @@
 package com.neptine.mimir.data.remote
 
+import android.util.Log
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.inject.Inject
-import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -15,10 +17,13 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 
 /**
  * OpenAI 兼容客户端（设计文档 §2.1 / §2.4）。
@@ -54,12 +59,13 @@ class OpenAiCompatibleClient @Inject constructor(
         apiKey: String,
         model: String,
         messages: List<ChatMessage>,
-    ): ChatResponse = withContext(Dispatchers.IO) {
+        options: ChatOptions,
+    ): ChatResponse {
         var lastError: IOException? = null
         var attempt = 0
         while (true) {
             try {
-                return@withContext execute(baseUrl, apiKey, model, messages)
+                return execute(baseUrl, apiKey, model, messages, options)
             } catch (e: IOException) {
                 lastError = e
                 val connectivity = e is UnknownHostException || e is ConnectException
@@ -78,49 +84,130 @@ class OpenAiCompatibleClient @Inject constructor(
     }
 
     /**
-     * 功能：发一次请求并把响应体解析成对象
-     * 参数：baseUrl 后端地址；apiKey 密钥；model 模型名；messages 消息列表
+     * 功能：发一次请求并把响应体解析成对象，必要时退化请求参数
+     * 参数：baseUrl 后端地址；apiKey 密钥；model 模型名；messages 消息列表；options 可调参数
      * 返回：解析后的响应体
      * 抛出：IOException 传输层失败；IllegalStateException 后端返回非 2xx
+     *
+     * 退化顺序按"损失从小到大"：先去掉思考强度与输出上限（老模型不认这两个字段），
+     * 再去掉 response_format（个别后端直接 400）。两次退化都不改变消息内容，
+     * 因此重复计费只发生在"后端确实拒绝"的情况下，而 400 不计费。
      */
-    private fun execute(
+    private suspend fun execute(
         baseUrl: String,
         apiKey: String,
         model: String,
         messages: List<ChatMessage>,
+        options: ChatOptions,
     ): ChatResponse {
-        return try {
-            executeOnce(baseUrl, apiKey, model, messages, forceJson = true)
-        } catch (e: IllegalStateException) {
-            // 有些后端不认 response_format：400 时退回普通请求，避免为了"强制 JSON"把整个后端打死
-            val rejected = e.message?.contains("返回 400") == true &&
-                e.message?.contains("response_format") == true
-            if (!rejected) throw e
-            executeOnce(baseUrl, apiKey, model, messages, forceJson = false)
+        var current = options
+        var lastError: IllegalStateException? = null
+        repeat(MAX_DEGRADE_STEPS) {
+            try {
+                return executeOnce(baseUrl, apiKey, model, messages, current)
+            } catch (e: IllegalStateException) {
+                val next = degrade(e.message.orEmpty(), current) ?: throw e
+                lastError = e
+                current = next
+            }
         }
+        throw lastError ?: IllegalStateException("模型接口失败")
+    }
+
+    /**
+     * 功能：按后端的 400 提示退掉一个不被接受的请求参数
+     * 参数：message 错误消息；options 当前参数
+     * 返回：退化后的参数；无法再退化时为 null（由调用方抛出原错误）
+     */
+    private fun degrade(message: String, options: ChatOptions): ChatOptions? {
+        if (!message.contains("返回 400")) return null
+        val extrasRejected = options.reasoningEffort != null || options.maxTokens != null
+        if (extrasRejected && (message.contains("reasoning_effort") || message.contains("max_tokens"))) {
+            return options.copy(reasoningEffort = null, maxTokens = null)
+        }
+        if (options.forceJson && message.contains("response_format")) {
+            return options.copy(forceJson = false)
+        }
+        return null
     }
 
     /**
      * 功能：发一次请求并把响应体解析成对象
-     * 参数：baseUrl/apiKey/model/messages 请求内容；forceJson 是否带 response_format
+     * 参数：baseUrl/apiKey/model/messages 请求内容；options 可调参数
      * 返回：解析后的响应体
      * 抛出：IOException 传输层失败；IllegalStateException 后端返回非 2xx
      */
-    private fun executeOnce(
+    private suspend fun executeOnce(
         baseUrl: String,
         apiKey: String,
         model: String,
         messages: List<ChatMessage>,
-        forceJson: Boolean,
+        options: ChatOptions,
+    ): ChatResponse = suspendCancellableCoroutine { cont ->
+        val request = buildRequest(baseUrl, apiKey, model, messages, options)
+        val call = http.newCall(request)
+        // 取消必须是真取消：单步超时与"强制打断"都靠协程取消触发，阻塞式 execute()
+        // 不会响应取消，一个 200 秒的长尾请求会把任务协程一起拖到 callTimeout。
+        cont.invokeOnCancellation { call.cancel() }
+        call.enqueue(
+            object : Callback {
+
+                /**
+                 * 功能：传输层失败时把异常交回调用方
+                 * 参数：call 本次调用；e 失败原因
+                 * 返回：无
+                 */
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWithException(e)
+                }
+
+                /**
+                 * 功能：收到响应后解析并交回调用方
+                 * 参数：call 本次调用；response HTTP 响应
+                 * 返回：无
+                 */
+                override fun onResponse(call: Call, response: Response) {
+                    response.use { resp ->
+                        val parsed = runCatching { parseResponse(resp, messages, model, options) }
+                        if (!cont.isActive) return
+                        parsed.fold(
+                            onSuccess = { cont.resume(it) },
+                            onFailure = { cont.resumeWithException(it) },
+                        )
+                    }
+                }
+            },
+        )
+    }
+
+    /**
+     * 功能：把一次 HTTP 响应解析成聊天响应
+     * 参数：response HTTP 响应；messages 原请求消息（用于判断是否带图）；model 模型名；
+     *       options 可调参数（只用于日志）
+     * 返回：解析后的响应体
+     * 抛出：IllegalStateException 非 2xx；反序列化异常响应体不是合法 JSON
+     */
+    private fun parseResponse(
+        response: Response,
+        messages: List<ChatMessage>,
+        model: String,
+        options: ChatOptions,
     ): ChatResponse {
-        val request = buildRequest(baseUrl, apiKey, model, messages, forceJson)
-        http.newCall(request).execute().use { response ->
-            val text = response.body.string()
-            if (!response.isSuccessful) {
-                throw IllegalStateException(httpFailureMessage(response.code, text, hasImage = messages.any { it.imageDataUrls.isNotEmpty() }))
-            }
-            return json.decodeFromString(ChatResponse.serializer(), text)
+        val text = response.body.string()
+        if (!response.isSuccessful) {
+            throw IllegalStateException(
+                httpFailureMessage(response.code, text, hasImage = messages.any { it.imageDataUrls.isNotEmpty() }),
+            )
         }
+        val parsed = json.decodeFromString(ChatResponse.serializer(), text)
+        parsed.usage?.let { usage ->
+            Log.d(
+                TAG,
+                "用量 in=${usage.promptTokens} out=${usage.completionTokens} total=${usage.totalTokens} " +
+                    "缓存=${usage.cachedTokens} model=$model 思考=${options.reasoningEffort ?: "默认"}",
+            )
+        }
+        return parsed
     }
 
     /**
@@ -158,7 +245,7 @@ class OpenAiCompatibleClient @Inject constructor(
 
     /**
      * 功能：构造 HTTP 请求
-     * 参数：baseUrl 后端地址；apiKey 密钥；model 模型名；messages 消息列表
+     * 参数：baseUrl 后端地址；apiKey 密钥；model 模型名；messages 消息列表；options 可调参数
      * 返回：待发送的 OkHttp 请求
      */
     private fun buildRequest(
@@ -166,14 +253,19 @@ class OpenAiCompatibleClient @Inject constructor(
         apiKey: String,
         model: String,
         messages: List<ChatMessage>,
-        forceJson: Boolean,
+        options: ChatOptions,
     ): Request {
         val payload = buildJsonObject {
             put("model", model)
             put("temperature", 0)
+            // 思考强度：GLM-5.3 系列不能关思考，只能降档。不传等于默认 max，
+            // 单步点按也要跑完整推理链（真机实测 9–207 秒）。
+            options.reasoningEffort?.let { put("reasoning_effort", it) }
+            // 输出上限：动作 JSON 只有几十字节，不设上限时后端放到 128K，长尾直接把请求拖到超时。
+            options.maxTokens?.let { put("max_tokens", it) }
             // 强制 JSON：autoglm-phone 这类模型默认会先输出自然语言推理，单靠提示词约束不住。
-            // 后端不认这个字段时由 execute 退回普通请求。
-            if (forceJson) {
+            // 后端不认这个字段时由 execute 退化重试。
+            if (options.forceJson) {
                 putJsonObject("response_format") { put("type", "json_object") }
             }
             putJsonArray("messages") {
@@ -226,6 +318,12 @@ class OpenAiCompatibleClient @Inject constructor(
     }
 
     private companion object {
+        /** 诊断日志标签，与 NetworkTimingListener 共用，便于把耗时与用量对照起来看。 */
+        const val TAG = "MimirNet"
+
+        /** 请求参数最多退化几次：思考强度/输出上限 → response_format → 无路可退。 */
+        const val MAX_DEGRADE_STEPS = 3
+
         /** 请求媒体类型。 */
         const val CONTENT_TYPE = "application/json"
 

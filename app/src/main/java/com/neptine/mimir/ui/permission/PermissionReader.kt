@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.Settings
 import com.neptine.mimir.service.MimirAccessibilityService
+import com.neptine.mimir.service.RESULT_CHANNEL_ID
 import dagger.hilt.android.qualifiers.ApplicationContext
 import rikka.shizuku.Shizuku
 import javax.inject.Inject
@@ -28,6 +29,14 @@ data class PermissionSnapshot(
     val shizuku: PermissionStatus,
     val accessibility: PermissionStatus,
     val notifications: PermissionStatus,
+    /**
+     * 结果通知渠道的"悬浮通知"是否可用。
+     *
+     * MIUI/HyperOS 把"屏幕上方弹出通知"做成了**渠道级**开关，与渠道重要性分开存放。
+     * 渠道重要性设成 HIGH 只是初值，ROM 侧开关关着就照样不弹横幅，
+     * 所以这是"完成通知真的会弹出来"的独立前提，必须单独报给用户。
+     */
+    val resultBanner: PermissionStatus,
 )
 
 /**
@@ -52,6 +61,7 @@ class PermissionReader @Inject constructor(
         shizuku = readShizuku(),
         accessibility = readAccessibility(),
         notifications = readNotifications(),
+        resultBanner = readResultBanner(),
     )
 
     /**
@@ -81,6 +91,18 @@ class PermissionReader @Inject constructor(
     }
 
     /**
+     * 功能：打开 Shizuku 应用（服务未运行时唯一的恢复途径）
+     * 参数：无
+     * 返回：无
+     *
+     * Shizuku 服务不能由本应用启动：它需要用户在手机会话里走无线调试授权。
+     */
+    fun openShizukuApp() {
+        val intent = context.packageManager.getLaunchIntentForPackage(SHIZUKU_PACKAGE) ?: return
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    /**
      * 功能：打开本应用的通知设置页
      * 参数：无
      * 返回：无
@@ -91,6 +113,49 @@ class PermissionReader @Inject constructor(
                 .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
+    }
+
+    /**
+     * 功能：读取结果通知渠道的"悬浮通知"是否可用
+     * 参数：无
+     * 返回：渠道重要性仍为 HIGH → GRANTED；被下调 → DENIED；渠道尚未创建 → UNAVAILABLE
+     *
+     * ROM 把"悬浮通知"存成渠道的实际重要性，而不是另设一个标记：
+     * 打开开关 = 渠道保持 HIGH，关闭 = 渠道被下调成 LOW。
+     * 所以看渠道当前重要性就能判断横幅会不会弹。
+     *
+     * 渠道还没建出来时不报 DENIED：用户只是还没触发过一次结果通知，
+     * 这时该告诉他去哪儿开，而不是说他关掉了。
+     */
+    private fun readResultBanner(): PermissionStatus {
+        val manager = context.getSystemService(android.app.NotificationManager::class.java) ?: return PermissionStatus.DENIED
+        val channel = manager.getNotificationChannel(RESULT_CHANNEL_ID) ?: return PermissionStatus.UNAVAILABLE
+        return if (channel.importance >= android.app.NotificationManager.IMPORTANCE_HIGH) {
+            PermissionStatus.GRANTED
+        } else {
+            PermissionStatus.DENIED
+        }
+    }
+
+    /**
+     * 功能：打开结果通知渠道的设置页
+     * 参数：无
+     * 返回：无
+     *
+     * 跳到渠道级页面而不是应用级页面：ROM 把"悬浮通知"做成渠道级开关，
+     * 应用级页面上没有这一项，用户在那里找不到要开的地方。
+     * 部分 ROM 不认这个 action，失败时退回应用级通知设置页。
+     */
+    fun openResultChannelSettings() {
+        val channelIntent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            .putExtra(Settings.EXTRA_CHANNEL_ID, RESULT_CHANNEL_ID)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (channelIntent.resolveActivity(context.packageManager) != null) {
+            context.startActivity(channelIntent)
+        } else {
+            openAppNotificationSettings()
+        }
     }
 
     /**
@@ -155,5 +220,10 @@ class PermissionReader @Inject constructor(
             true
         }
         return if (enabled && permissionGranted) PermissionStatus.GRANTED else PermissionStatus.DENIED
+    }
+
+    private companion object {
+        /** Shizuku 的包名；只用于服务未运行时把用户送到它的界面。 */
+        const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
     }
 }

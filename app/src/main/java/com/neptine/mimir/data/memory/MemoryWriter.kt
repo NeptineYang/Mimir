@@ -11,12 +11,18 @@ import com.neptine.mimir.core.contract.MemorySource
 import com.neptine.mimir.core.contract.MemoryStatus
 import com.neptine.mimir.core.contract.ObservationSnapshot
 import com.neptine.mimir.core.contract.Procedure
+import com.neptine.mimir.core.contract.ProcedureAction
+import com.neptine.mimir.core.contract.ProcedurePage
 import com.neptine.mimir.core.contract.ProcedureStep
 import com.neptine.mimir.core.contract.TargetFingerprint
 import com.neptine.mimir.core.contract.TaskSpec
+import com.neptine.mimir.data.db.MimirDatabase
 import com.neptine.mimir.data.db.dao.MemoryDao
 import com.neptine.mimir.data.db.entity.AuditEntity
+import com.neptine.mimir.data.db.entity.ProcedureActionEntity
+import com.neptine.mimir.data.db.entity.ProcedurePageEntity
 import com.neptine.mimir.data.db.entity.TaskEntity
+import androidx.room.withTransaction
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -34,6 +40,7 @@ import javax.inject.Singleton
 class MemoryWriter @Inject constructor(
     private val memoryDao: MemoryDao,
     private val versions: AppVersionReader,
+    private val database: MimirDatabase,
 ) {
 
     /**
@@ -51,10 +58,13 @@ class MemoryWriter @Inject constructor(
         entrySnapshot: ObservationSnapshot,
         overlaySegments: Boolean = false,
     ): MemoryWriteResult? {
-        val steps = buildSteps(rows, spec.parameters)
-        if (steps.isEmpty()) return null
-        val activity = steps.firstNotNullOfOrNull { it.pagePath }.orEmpty()
-        val stableKey = stableKeyOf(spec, activity, steps)
+        val pages = buildPages(rows, spec.parameters)
+        if (pages.isEmpty()) return null
+        val steps = pages.flatMap { page ->
+            page.actions.map { ProcedureStep(it.actionKind, it.anchor, page.pagePath, it.parameterSlots) }
+        }
+        val activity = pages.firstOrNull()?.pagePath.orEmpty()
+        val stableKey = stableKeyOf(spec, activity, pages)
         val title = titleOf(spec)
 
         // §2.5.8：凭据的使用记录只进审计（哪条凭据、填充结果），不进配方。
@@ -98,7 +108,7 @@ class MemoryWriter @Inject constructor(
             )
         }
 
-        val procedure = buildProcedure(task, spec, steps, stableKey, entrySnapshot)
+        val procedure = buildProcedure(task, spec, pages, stableKey, entrySnapshot)
         val now = System.currentTimeMillis()
 
         if (outcome != VerificationOutcome.DONE && outcome != VerificationOutcome.DONE_READBACK) {
@@ -124,7 +134,7 @@ class MemoryWriter @Inject constructor(
                 createdAt = now,
                 lastTaskId = task.taskId,
             )
-            memoryDao.upsertProcedure(ProcedureCodec.toEntity(created))
+            persist(created)
             return MemoryWriteResult.Written(
                 procedureId = created.id,
                 title = created.title,
@@ -180,7 +190,7 @@ class MemoryWriter @Inject constructor(
             runCatching {
                 memoryDao.bumpFailCount(id)
                 val entity = memoryDao.findProcedure(id) ?: return@runCatching
-                val procedure = ProcedureCodec.fromEntity(entity)
+                val procedure = ProcedureCodec.fromEntity(entity, emptyList())
                 if (procedure.status != MemoryStatus.ACTIVE || procedure.failCount < STALE_AFTER_FAILURES) {
                     return@runCatching
                 }
@@ -193,29 +203,40 @@ class MemoryWriter @Inject constructor(
     }
 
     /**
-     * 功能：从审计里提取可进配方的步骤
+     * 功能：从审计里提取页面与动作
      * 参数：rows 动作审计；parameters 写入时的任务参数
-     * 返回：只含确认生效动作的步骤列表（锚点已把动态值换成占位符）
+     * 返回：只含确认生效动作的页面列表（锚点已把动态值换成占位符）
      *
      * 只用"确认生效"的动作：`NO_EFFECT`/`UNKNOWN` 的动作进配方等于把失败路径教给下一次。
      * 参数值在这里就掩掉，而不是等到算稳定键时：锚点、稳定键、页面签名必须用同一套口径，
      * 否则同一路径换个收件人就会被当成另一条配方。
      */
-    private fun buildSteps(rows: List<AuditEntity>, parameters: Map<String, String>): List<ProcedureStep> =
-        rows
+    private fun buildPages(rows: List<AuditEntity>, parameters: Map<String, String>): List<ProcedurePage> {
+        val drafts = rows
             .filter { it.outcome == EffectOutcome.CONFIRMED.name }
             .mapNotNull { row ->
                 val kind = runCatching { ActionKind.valueOf(row.actionKind) }.getOrNull()
                     ?: return@mapNotNull null
                 val anchor = TargetFingerprintCodec.decode(row.targetFingerprint)?.let(::anchorOf)
                 val masked = anchor?.let { maskAnchor(it, parameters) }
-                ProcedureStep(
-                    actionKind = kind,
-                    anchor = masked?.first,
+                PageDraftAction(
+                    action = ProcedureAction(
+                        id = UUID.randomUUID().toString(),
+                        actionKind = kind,
+                        title = masked?.first?.text
+                            ?: masked?.first?.resourceId
+                            ?: kind.name,
+                        anchor = masked?.first,
+                        parameterSlots = masked?.second.orEmpty(),
+                    ),
+                    // 审计表的 sub_goal 列实际存的是当时的 Activity 名（recordAudit 传 snapshot.activityName），
+                    // 不是模型生成的子目标；列名沿用旧字段，语义以写入侧为准。
                     pagePath = row.subGoal.takeIf { it.isNotEmpty() },
-                    parameterSlots = masked?.second.orEmpty(),
+                    observationHash = row.observationHash,
                 )
             }
+        return ProcedureTree.groupByPageBreaks(drafts)
+    }
 
     /**
      * 功能：把锚点里的动态参数值替换成占位符并收集槽位
@@ -238,7 +259,7 @@ class MemoryWriter @Inject constructor(
 
     /**
      * 功能：把一组步骤组装成配方
-     * 参数：task 任务；spec 任务约束；steps 已提取的步骤；stableKey 稳定键；
+     * 参数：task 任务；spec 任务约束；pages 已切好的页面；stableKey 稳定键；
      *       entrySnapshot 入口页观察
      * 返回：配方（状态为候选，尚未落库）
      *
@@ -248,11 +269,17 @@ class MemoryWriter @Inject constructor(
     private fun buildProcedure(
         task: TaskEntity,
         spec: TaskSpec,
-        steps: List<ProcedureStep>,
+        pages: List<ProcedurePage>,
         stableKey: String,
         entrySnapshot: ObservationSnapshot,
     ): Procedure {
         val pageSignature = MemoryParameters.signature(entrySnapshot, spec.parameters)
+        // 入口断言取入口页前几个锚点而不是只取一个：
+        // 单锚点在列表页/首页很容易撞到广告位或重复文案，多个锚点一起断言才能证明"确实在这一页"。
+        val precondition = pages.firstOrNull()?.actions.orEmpty()
+            .mapNotNull { it.anchor }
+            .distinctBy { it.resourceId ?: it.text ?: it.contentDescription }
+            .take(MAX_PRECONDITION_ANCHORS)
         return Procedure(
             id = UUID.randomUUID().toString(),
             packageName = spec.packageName,
@@ -260,8 +287,11 @@ class MemoryWriter @Inject constructor(
             stableKey = stableKey,
             category = "",
             title = titleOf(spec),
-            precondition = steps.firstNotNullOfOrNull { it.anchor }?.let(::listOf).orEmpty(),
-            steps = steps,
+            precondition = precondition,
+            // 只有入口页拿得到真实页面文本；其余页面的签名留空，不拿动作文本冒充静态文本。
+            pages = pages.mapIndexed { index, page ->
+                if (index == 0) page.copy(signature = pageSignature) else page
+            },
             postcondition = spec.completionContract.requiredFields,
             pageSignature = pageSignature,
             source = MemorySource.AUTO,
@@ -278,6 +308,53 @@ class MemoryWriter @Inject constructor(
     }
 
     /**
+     * 功能：把配方与它的树写进库
+     * 参数：procedure 配方
+     * 返回：无
+     *
+     * 主表与两张节点表放在同一事务里：只写主表成功、节点写一半会得到一棵残缺的树，
+     * 下次检索命中后按残缺路径执行比没有配方更危险。
+     * 旧 `steps_json` 列仍写扁平快照，供旧版本导出格式兼容，不作为读取真值。
+     */
+    private suspend fun persist(procedure: Procedure) {
+        database.withTransaction {
+            memoryDao.upsertProcedure(ProcedureCodec.toEntity(procedure))
+            memoryDao.deleteActionsOf(procedure.id)
+            memoryDao.deletePagesOf(procedure.id)
+            if (procedure.pages.isEmpty()) return@withTransaction
+            memoryDao.upsertPages(
+                procedure.pages.mapIndexed { index, page ->
+                    ProcedurePageEntity(
+                        id = page.id,
+                        procedureId = procedure.id,
+                        title = page.title,
+                        pagePath = page.pagePath,
+                        signatureJson = ProcedureCodec.encodeStringsForTree(page.signature),
+                        sortOrder = index,
+                        createdAt = procedure.createdAt,
+                    )
+                },
+            )
+            memoryDao.upsertActions(
+                procedure.pages.flatMap { page ->
+                    page.actions.mapIndexed { index, action ->
+                        ProcedureActionEntity(
+                            id = action.id,
+                            procedureId = procedure.id,
+                            pageId = page.id,
+                            actionKind = action.actionKind.name,
+                            title = action.title,
+                            anchorJson = ProcedureCodec.encodeAnchor(action.anchor),
+                            slotsJson = ProcedureCodec.encodeSlots(action.parameterSlots),
+                            sortOrder = index,
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    /**
      * 功能：把目标指纹降级成配方锚点
      * 参数：fingerprint 动作目标指纹
      * 返回：锚点；只有坐标信息时为 null
@@ -285,15 +362,15 @@ class MemoryWriter @Inject constructor(
      * A5 绝对坐标不进配方：它必须带 TTL 且连续失败即禁用，自动生成时写它等于埋一颗定时炸弹。
      */
     private fun anchorOf(fingerprint: TargetFingerprint): Anchor? {
+        val text = stableTextOf(fingerprint)
         if (!fingerprint.resourceId.isNullOrEmpty()) {
             return Anchor(
                 level = AnchorLevel.A1,
                 resourceId = fingerprint.resourceId,
-                text = fingerprint.text ?: fingerprint.contentDescription,
+                text = text,
                 className = fingerprint.className,
             )
         }
-        val text = fingerprint.text ?: fingerprint.contentDescription
         if (text.isNullOrEmpty()) return null
         return Anchor(
             level = AnchorLevel.A2,
@@ -304,18 +381,36 @@ class MemoryWriter @Inject constructor(
     }
 
     /**
+     * 功能：取锚点的稳定文本
+     * 参数：fingerprint 目标指纹
+     * 返回：优先用静态文案；文案是动态值时退回无障碍描述；两者都没有时为 null
+     *
+     * "3 分钟前"、"12.5 元"、"99+" 这类文本下次几乎必然对不上，
+     * 拿它当锚点等于写入一条注定失效的记忆。只在描述非空时才替换：
+     * 两个都动态时保留原文，总比没有锚点强。
+     */
+    private fun stableTextOf(fingerprint: TargetFingerprint): String? {
+        val raw = fingerprint.text?.takeIf { it.isNotBlank() }
+        val description = fingerprint.contentDescription?.takeIf { it.isNotBlank() }
+        if (raw == null) return description
+        if (description != null && DYNAMIC_TEXT.containsMatchIn(raw)) return description
+        return raw
+    }
+
+    /**
      * 功能：生成稳定键
-     * 参数：spec 任务约束；activity 起始页面；steps 步骤
-     * 返回：包名 | 任务类型 | 起始页面 | 动作序列 的规范化摘要
+     * 参数：spec 任务约束；activity 起始页面；pages 配方树
+     * 返回：包名 | 任务类型 | 起始页面 | 页面序列 的规范化摘要
      *
      * 与 §2.5.2 的"包名 + 任务类型 + 页面路径 + 前后置条件"对齐；后置条件在这里恒为
      * 完成契约字段，不额外拼进键里，避免同一路径因字段顺序不同生成两条候选。
+     *
+     * 动作细节（锚点文本、点击顺序）**不**进键：四层树里页面才是稳定边界，
+     * 把动作也拼进去会让"同一流程换了个按钮文案"变成另一条配方，自动学习永远积累不起来。
      */
-    private fun stableKeyOf(spec: TaskSpec, activity: String, steps: List<ProcedureStep>): String {
-        val path = steps.joinToString(">") { step ->
-            val anchor = step.anchor
-            val label = anchor?.resourceId ?: anchor?.text ?: anchor?.contentDescription ?: "-"
-            "${step.actionKind.name}:$label"
+    private fun stableKeyOf(spec: TaskSpec, activity: String, pages: List<ProcedurePage>): String {
+        val path = pages.joinToString(">") { page ->
+            page.pagePath?.substringAfterLast('.') ?: page.title
         }
         return listOf(spec.packageName, spec.taskType, activity, path).joinToString("|")
     }
@@ -350,5 +445,25 @@ class MemoryWriter @Inject constructor(
 
         /** 自动标题的最大长度。 */
         const val TITLE_LIMIT = 24
+
+        /**
+         * 入口前置断言最多取几个锚点。
+         *
+         * 取 3 个：单锚点在列表页会撞到重复文案或广告位，太多则入口页稍一改版就断言失败。
+         */
+        const val MAX_PRECONDITION_ANCHORS = 3
+
+        /**
+         * 动态文本特征：纯数字/金额、时间、相对时间、日期。
+         *
+         * 只用于判断"这条文案能不能当锚点"，不做完整解析；误判的代价只是退回无障碍描述。
+         */
+        val DYNAMIC_TEXT = Regex(
+            "^(\\s*[\\d\\s.,:：%+\\-]+\\s*)$" +
+                "|(\\d{1,2}[:：]\\d{2})" +
+                "|(\\d+\\s*(分钟|小时|秒|天|条|个|人|次|元|折|km|m)\\s*(前|后|以内|起)?)" +
+                "|(\\d{1,4}[-/年]\\d{1,2}[-/月]\\d{1,2})",
+            RegexOption.IGNORE_CASE,
+        )
     }
 }

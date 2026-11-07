@@ -85,6 +85,7 @@ object TaskSpecCodec {
             put("maxModelCalls", spec.budget.maxModelCalls)
             put("maxStepDurationMs", spec.budget.maxStepDurationMs)
         }
+        put("autoApproveL2a", spec.autoApproveL2a)
     }.toString()
 
     /**
@@ -107,6 +108,7 @@ object TaskSpecCodec {
             riskGrants = decodeGrants(root),
             completionContract = decodeCompletion(root.objectOrEmpty("completionContract")),
             budget = decodeBudget(root.objectOrEmpty("budget")),
+            autoApproveL2a = root["autoApproveL2a"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false,
         )
     }
 
@@ -142,7 +144,7 @@ object TaskSpecCodec {
         maxSteps = node["maxSteps"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 40,
         maxDurationMs = node["maxDurationMs"]?.jsonPrimitive?.longOrNull ?: 10 * 60 * 1000L,
         maxModelCalls = node["maxModelCalls"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 60,
-        maxStepDurationMs = node["maxStepDurationMs"]?.jsonPrimitive?.longOrNull ?: 20_000L,
+        maxStepDurationMs = node["maxStepDurationMs"]?.jsonPrimitive?.longOrNull ?: 120_000L,
     )
 
     /**

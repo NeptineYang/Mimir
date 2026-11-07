@@ -5,7 +5,9 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.neptine.mimir.data.db.entity.PreferenceEntity
+import com.neptine.mimir.data.db.entity.ProcedureActionEntity
 import com.neptine.mimir.data.db.entity.ProcedureEntity
+import com.neptine.mimir.data.db.entity.ProcedurePageEntity
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -57,12 +59,45 @@ interface MemoryDao {
     suspend fun upsertPreference(preference: PreferenceEntity)
 
     /**
-     * 功能：读取适用策略（全局 + 指定 App）
+     * 功能：读取适用偏好（全局 + 指定 App）
      * 参数：packageName 目标包名
-     * 返回：scope 为空或等于该包名的策略列表
+     * 返回：status 为 ACTIVE 的偏好，按置信度降序
+     *
+     * 只取 ACTIVE：DISABLED 是用户明确关掉的，不能再影响规划。
+     * 置信度降序而不是创建时间：手写 1.0 应排在任务后确认的 0.9 之前。
      */
-    @Query("SELECT * FROM mem_preference WHERE scope IS NULL OR scope = :packageName")
+    @Query(
+        "SELECT * FROM mem_preference WHERE status = 'ACTIVE' " +
+            "AND (scope IS NULL OR scope = :packageName) " +
+            "ORDER BY confidence DESC, created_at DESC",
+    )
     suspend fun findPreferences(packageName: String): List<PreferenceEntity>
+
+    /**
+     * 功能：读取一条偏好
+     * 参数：id 偏好标识
+     * 返回：偏好；不存在时为 null
+     */
+    @Query("SELECT * FROM mem_preference WHERE id = :id")
+    suspend fun findPreference(id: String): PreferenceEntity?
+
+    /**
+     * 功能：切换偏好的启停状态
+     * 参数：id 偏好标识；status 新状态
+     * 返回：无
+     */
+    @Query("UPDATE mem_preference SET status = :status WHERE id = :id")
+    suspend fun updatePreferenceStatus(id: String, status: String)
+
+    /**
+     * 功能：记录一次偏好命中
+     * 参数：ids 本次注入的偏好标识；at 命中时间（毫秒）
+     * 返回：无
+     *
+     * 只累加计数与时间，不参与排序也不触发淘汰：先积累数据，再决定要不要按命中率收敛。
+     */
+    @Query("UPDATE mem_preference SET hit_count = hit_count + 1, last_used_at = :at WHERE id IN (:ids)")
+    suspend fun bumpPreferenceHits(ids: List<String>, at: Long)
 
     /**
      * 功能：观察全部配方，供白盒编辑页展示
@@ -87,9 +122,83 @@ interface MemoryDao {
      * 功能：删除一条配方
      * 参数：id 配方标识
      * 返回：无
+     *
+     * 只删主表；节点表由调用方在同一事务里清（见 `deletePagesOf` / `deleteActionsOf`）。
      */
     @Query("DELETE FROM mem_procedure WHERE id = :id")
     suspend fun deleteProcedure(id: String)
+
+    /**
+     * 功能：取某配方的页面节点
+     * 参数：procedureId 配方标识
+     * 返回：按树内顺序排列的页面
+     */
+    @Query(
+        "SELECT * FROM mem_procedure_page WHERE procedure_id = :procedureId " +
+            "ORDER BY sort_order ASC, id ASC",
+    )
+    suspend fun findPages(procedureId: String): List<ProcedurePageEntity>
+
+    /**
+     * 功能：取某配方的动作节点
+     * 参数：procedureId 配方标识
+     * 返回：按树内顺序排列的动作
+     */
+    @Query(
+        "SELECT * FROM mem_procedure_action WHERE procedure_id = :procedureId " +
+            "ORDER BY sort_order ASC, id ASC",
+    )
+    suspend fun findActions(procedureId: String): List<ProcedureActionEntity>
+
+    /**
+     * 功能：观察全部页面节点
+     * 参数：无
+     * 返回：按配方与顺序排列的页面数据流
+     *
+     * 编辑页一次拿整片森林再按 procedure_id 分组，避免为每条配方各查一次（N+1）。
+     */
+    @Query("SELECT * FROM mem_procedure_page ORDER BY procedure_id ASC, sort_order ASC, id ASC")
+    fun observeAllPages(): Flow<List<ProcedurePageEntity>>
+
+    /**
+     * 功能：观察全部动作节点
+     * 参数：无
+     * 返回：按配方与顺序排列的动作数据流
+     */
+    @Query("SELECT * FROM mem_procedure_action ORDER BY procedure_id ASC, sort_order ASC, id ASC")
+    fun observeAllActions(): Flow<List<ProcedureActionEntity>>
+
+    /**
+     * 功能：批量写入页面节点
+     * 参数：pages 页面行
+     * 返回：无
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertPages(pages: List<ProcedurePageEntity>)
+
+    /**
+     * 功能：批量写入动作节点
+     * 参数：actions 动作行
+     * 返回：无
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertActions(actions: List<ProcedureActionEntity>)
+
+    /**
+     * 功能：删除某配方的全部页面节点
+     * 参数：procedureId 配方标识
+     * 返回：无
+     */
+    @Query("DELETE FROM mem_procedure_page WHERE procedure_id = :procedureId")
+    suspend fun deletePagesOf(procedureId: String)
+
+    /**
+     * 功能：删除某配方的全部动作节点
+     * 参数：procedureId 配方标识
+     * 返回：无
+     */
+    @Query("DELETE FROM mem_procedure_action WHERE procedure_id = :procedureId")
+    suspend fun deleteActionsOf(procedureId: String)
 
     /**
      * 功能：观察全部策略

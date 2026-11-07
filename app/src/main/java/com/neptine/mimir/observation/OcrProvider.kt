@@ -26,8 +26,8 @@ import kotlinx.coroutines.withContext
  *
  * 边界：
  * - 只识别文本与位置，不判断可点性（OCR 不知道什么是按钮），可点性靠后续动作自己验证；
- * - 结果只用于**只读导航**。纯视觉下的文本输入与凭据填充仍然 fail closed——
- *   没有控件节点就构造不出 `ACTION_SET_TEXT` 的目标。
+ * - 结果用于导航与定位。纯视觉下的文本输入由任务期接管的无键盘输入法（commitText）
+ *   兜底，不依赖控件节点；凭据填充仍要求真实密码框，保持 fail closed。
  */
 @Singleton
 class OcrProvider @Inject constructor(

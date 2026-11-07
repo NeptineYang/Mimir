@@ -38,6 +38,7 @@ import com.neptine.mimir.ui.viewmodel.AuditRow
 import com.neptine.mimir.ui.viewmodel.AuditUiState
 import com.neptine.mimir.ui.viewmodel.AuditViewModel
 import com.neptine.mimir.ui.viewmodel.TaskRow
+import com.neptine.mimir.ui.viewmodel.formatSeconds
 import com.neptine.mimir.ui.viewmodel.formatTime
 import java.util.Locale
 
@@ -154,6 +155,21 @@ private fun DetailContent(
             KeyValueRow(key = "目标应用", value = task.packageName.ifBlank { "—（尚未解析）" })
             KeyValueRow(key = "已完成步数", value = "${task.stepCount}")
             KeyValueRow(key = "模型调用", value = "${task.budgetModelCalls}")
+            val timed = detail.steps.filter { it.totalMs > 0 }
+            if (timed.isEmpty()) {
+                KeyValueRow(key = "步耗时", value = "未留存（v6 之前的记录）")
+            } else {
+                KeyValueRow(
+                    key = "平均步耗时",
+                    value = "${formatSeconds(timed.sumOf { it.totalMs } / timed.size)} · ${timed.size} 步有计时",
+                )
+                KeyValueRow(
+                    key = "耗时构成",
+                    value = "观察 ${formatSeconds(timed.sumOf { it.observeMs } / timed.size)} · " +
+                        "模型 ${formatSeconds(timed.sumOf { it.decideMs } / timed.size)} · " +
+                        "注入判定 ${formatSeconds(timed.sumOf { it.actMs } / timed.size)}",
+                )
+            }
         }
     }
 

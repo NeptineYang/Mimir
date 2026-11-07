@@ -4,19 +4,25 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.neptine.mimir.agent.MemoryReverifier
 import com.neptine.mimir.agent.ReverifyVerdict
-import com.neptine.mimir.core.contract.ActionKind
 import com.neptine.mimir.core.contract.Anchor
 import com.neptine.mimir.core.contract.AnchorLevel
 import com.neptine.mimir.core.contract.MemorySource
 import com.neptine.mimir.core.contract.MemoryStatus
+import com.neptine.mimir.core.contract.Preference
+import com.neptine.mimir.core.contract.PreferenceCategory
 import com.neptine.mimir.core.contract.Procedure
-import com.neptine.mimir.core.contract.ProcedureStep
+import com.neptine.mimir.core.contract.ProcedurePage
+import com.neptine.mimir.data.db.MimirDatabase
 import com.neptine.mimir.data.db.dao.MemoryDao
 import com.neptine.mimir.data.db.entity.PreferenceEntity
+import com.neptine.mimir.data.db.entity.ProcedureActionEntity
 import com.neptine.mimir.data.db.entity.ProcedureEntity
+import com.neptine.mimir.data.db.entity.ProcedurePageEntity
 import com.neptine.mimir.data.memory.ProcedureCodec
+import com.neptine.mimir.data.memory.ProcedureTree
 import com.neptine.mimir.service.AgentForegroundService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -45,18 +51,41 @@ data class ProcedureRow(
     val failCount: Int,
     val lastVerifiedAt: Long,
     val anchorsText: String,
-    val stepsText: String,
     val postconditionText: String,
     val signatureText: String,
-)
+    /** 四层树：App → 任务 → 页面 → 动作；列表只展示页面数与动作数，编辑器用整棵树。 */
+    val pages: List<ProcedurePage>,
+) {
+    /** 页面数量（第三层节点数）。 */
+    val pageCount: Int get() = pages.size
 
-/** 策略列表项的展示模型。 */
+    /** 动作数量（第四层节点数）。 */
+    val actionCount: Int get() = pages.sumOf { it.actions.size }
+}
+
+/** 偏好列表项的展示模型。 */
 data class PreferenceRow(
     val id: String,
+    val category: PreferenceCategory,
+    val subject: String?,
     val title: String,
     val scope: String,
     val content: String,
+    val value: String,
+    val confidence: Double,
     val source: String,
+    val status: String,
+)
+
+/** 编辑中的偏好草稿。 */
+data class PreferenceDraft(
+    val id: String?,
+    val category: PreferenceCategory,
+    val subject: String,
+    val title: String,
+    val content: String,
+    val value: String,
+    val scope: String,
 )
 
 /** 编辑中的配方草稿；列表与表单共用同一份，避免两处状态不同步。 */
@@ -66,9 +95,10 @@ data class ProcedureDraft(
     val packageName: String,
     val taskType: String,
     val anchors: String,
-    val steps: String,
     val postcondition: String,
     val signature: String,
+    /** 树直接作为草稿的一部分：页面与动作的增删改都作用在它上面，保存时整树替换。 */
+    val pages: List<ProcedurePage> = emptyList(),
 )
 
 /** 记忆页状态。 */
@@ -80,6 +110,8 @@ data class MemoryUiState(
     val error: String?,
     /** 正在立即重验的配方；为空表示没有核对在跑。 */
     val verifyingId: String? = null,
+    /** 正在编辑的偏好；为空表示没有打开偏好表单。 */
+    val preferenceDraft: PreferenceDraft? = null,
 )
 
 /**
@@ -91,11 +123,13 @@ data class MemoryUiState(
 @HiltViewModel
 class MemoryViewModel @Inject constructor(
     private val memoryDao: MemoryDao,
+    private val database: MimirDatabase,
     private val reverifier: MemoryReverifier,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private val draftFlow = MutableStateFlow<ProcedureDraft?>(null)
+    private val preferenceDraftFlow = MutableStateFlow<PreferenceDraft?>(null)
     private val messageFlow = MutableStateFlow<String?>(null)
     private val errorFlow = MutableStateFlow<String?>(null)
     private val verifyingFlow = MutableStateFlow<String?>(null)
@@ -128,26 +162,56 @@ class MemoryViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 配方与其树的组合流。
+     *
+     * 三个 Flow 合成一次：编辑页需要整片森林，逐条查节点会变成 N+1；
+     * 合成放在这里而不是 UI 层，列表与草稿就能共享同一份树。
+     */
+    private val treeFlow = combine(
+        memoryDao.observeProcedures(),
+        memoryDao.observeAllPages(),
+        memoryDao.observeAllActions(),
+    ) { procedures, pages, actions ->
+        val pagesByProcedure = pages.groupBy { it.procedureId }
+        val actionsByProcedure = actions.groupBy { it.procedureId }
+        procedures.map { entity ->
+            ProcedureWithTree(
+                entity = entity,
+                pages = ProcedureTree.assemble(
+                    pages = pagesByProcedure[entity.id].orEmpty(),
+                    actions = actionsByProcedure[entity.id].orEmpty(),
+                    anchorOf = ProcedureCodec::decodeAnchorOrNull,
+                    slotsOf = ProcedureCodec::decodeSlots,
+                ),
+            )
+        }
+    }
+
+    /** 不含进行中状态的基础页面状态。 */
+    private val baseState = combine(
+        treeFlow,
+        memoryDao.observePreferences(),
+        draftFlow,
+        messageFlow,
+        errorFlow,
+    ) { rows, preferences, draft, message, error ->
+        MemoryUiState(
+            procedures = rows.map { it.toRow() },
+            preferences = preferences.map { it.toRow() },
+            draft = draft,
+            message = message,
+            error = error,
+        )
+    }
+
     /** 页面状态。 */
     val state: StateFlow<MemoryUiState> = combine(
-        combine(
-            memoryDao.observeProcedures(),
-            memoryDao.observePreferences(),
-            draftFlow,
-            messageFlow,
-            errorFlow,
-        ) { procedures, preferences, draft, message, error ->
-            MemoryUiState(
-                procedures = procedures.map { it.toRow() },
-                preferences = preferences.map { it.toRow() },
-                draft = draft,
-                message = message,
-                error = error,
-            )
-        },
+        baseState,
         verifyingFlow,
-    ) { base, verifyingId ->
-        base.copy(verifyingId = verifyingId)
+        preferenceDraftFlow,
+    ) { base, verifyingId, preferenceDraft ->
+        base.copy(verifyingId = verifyingId, preferenceDraft = preferenceDraft)
     }
         .flowOn(Dispatchers.Default)
         .stateIn(
@@ -169,9 +233,10 @@ class MemoryViewModel @Inject constructor(
             packageName = "",
             taskType = "",
             anchors = "",
-            steps = "",
             postcondition = "",
             signature = "",
+            // 新建时先给一个空页面：树至少要有第三层，否则用户不知道该从哪里加动作。
+            pages = listOf(newPage()),
         )
     }
 
@@ -184,7 +249,7 @@ class MemoryViewModel @Inject constructor(
         viewModelScope.launch {
             val entity = memoryDao.findProcedure(id) ?: return@launch
             errorFlow.value = null
-            draftFlow.value = ProcedureCodec.fromEntity(entity).toDraft()
+            draftFlow.value = ProcedureCodec.fromEntity(entity, loadTree(id)).toDraft()
         }
     }
 
@@ -212,8 +277,8 @@ class MemoryViewModel @Inject constructor(
      * 参数：无
      * 返回：无
      *
-     * 草稿里的步骤按"每行一个动作"读：`TAP 领取` / `TEXT 搜索框` / `BACK`。
-     * 只有 TAP 与 TEXT 需要文本（写成 A2 锚点），其余动作不挂锚点。
+     * 树按草稿原样写：页面与动作的增删改都已作用在 `draft.pages` 上，
+     * 保存时整树替换（同一事务里先删后插），不做增量比对。
      */
     fun saveDraft() {
         val draft = draftFlow.value ?: return
@@ -221,24 +286,23 @@ class MemoryViewModel @Inject constructor(
             errorFlow.value = "标题与包名不能为空"
             return
         }
-        val steps = parseSteps(draft.steps)
-        if (steps == null) {
-            errorFlow.value = "步骤格式不对：每行一个动作，例如 `TAP 领取`、`TEXT 搜索框`、`BACK`"
-            return
-        }
         viewModelScope.launch {
             val existing = draft.id?.let { memoryDao.findProcedure(it) }
             val source = existing?.let { runCatching { MemorySource.valueOf(it.source) }.getOrNull() }
                 ?: MemorySource.USER_WRITTEN
+            // 先归一化再算键：stable_key 与实体里的 taskType 必须用同一个值，
+            // 否则手写配方会写成"包名||标题"而实体是 GENERAL，跨路径去重直接失效。
+            val packageName = draft.packageName.trim()
+            val taskType = draft.taskType.trim().ifEmpty { DEFAULT_TASK_TYPE }
             val procedure = Procedure(
                 id = draft.id ?: UUID.randomUUID().toString(),
-                packageName = draft.packageName.trim(),
-                taskType = draft.taskType.trim().ifEmpty { DEFAULT_TASK_TYPE },
-                stableKey = stableKeyOf(draft),
+                packageName = packageName,
+                taskType = taskType,
+                stableKey = stableKeyOf(packageName, taskType, draft.title.trim()),
                 category = existing?.category.orEmpty(),
                 title = draft.title.trim(),
                 precondition = draft.anchors.toAnchors(),
-                steps = steps,
+                pages = draft.pages,
                 postcondition = draft.postcondition.lines().map(String::trim).filter(String::isNotEmpty),
                 pageSignature = draft.signature.lines().map(String::trim).filter(String::isNotEmpty),
                 source = source,
@@ -247,13 +311,13 @@ class MemoryViewModel @Inject constructor(
                 successCount = existing?.successCount ?: 0,
                 failCount = existing?.failCount ?: 0,
                 confidence = if (source == MemorySource.USER_WRITTEN) 1.0 else existing?.confidence ?: 0.5,
-                appVersionCode = versionCodeOf(draft.packageName.trim()),
+                appVersionCode = versionCodeOf(packageName),
                 validUntil = existing?.validUntil,
                 lastVerifiedAt = existing?.lastVerifiedAt ?: 0L,
                 createdAt = existing?.createdAt ?: System.currentTimeMillis(),
                 lastTaskId = existing?.lastTaskId,
             )
-            runCatching { memoryDao.upsertProcedure(ProcedureCodec.toEntity(procedure)) }
+            runCatching { persist(procedure) }
                 .onSuccess {
                     draftFlow.value = null
                     messageFlow.value = "已保存「${procedure.title}」"
@@ -291,11 +355,127 @@ class MemoryViewModel @Inject constructor(
      * 功能：删除一条配方
      * 参数：id 配方标识
      * 返回：无
+     *
+     * 主表与两张节点表在同一事务里删；漏掉节点会留下无法再被引用的孤儿页面/动作。
      */
     fun deleteProcedure(id: String) {
         viewModelScope.launch {
-            memoryDao.deleteProcedure(id)
+            database.withTransaction {
+                memoryDao.deleteProcedure(id)
+                memoryDao.deleteActionsOf(id)
+                memoryDao.deletePagesOf(id)
+            }
             messageFlow.value = "已删除"
+        }
+    }
+
+    /**
+     * 功能：打开新建偏好表单
+     * 参数：无
+     * 返回：无
+     */
+    fun startCreatePreference() {
+        errorFlow.value = null
+        preferenceDraftFlow.value = PreferenceDraft(
+            id = null,
+            category = PreferenceCategory.GENERAL,
+            subject = "",
+            title = "",
+            content = "",
+            value = "",
+            scope = "",
+        )
+    }
+
+    /**
+     * 功能：打开编辑偏好表单
+     * 参数：id 偏好标识
+     * 返回：无
+     */
+    fun startEditPreference(id: String) {
+        viewModelScope.launch {
+            val entity = memoryDao.findPreference(id) ?: return@launch
+            errorFlow.value = null
+            preferenceDraftFlow.value = ProcedureCodec.fromEntity(entity).toDraft()
+        }
+    }
+
+    /**
+     * 功能：更新偏好草稿
+     * 参数：draft 新草稿
+     * 返回：无
+     */
+    fun updatePreferenceDraft(draft: PreferenceDraft) {
+        preferenceDraftFlow.value = draft
+    }
+
+    /**
+     * 功能：关闭偏好表单
+     * 参数：无
+     * 返回：无
+     */
+    fun cancelPreferenceDraft() {
+        preferenceDraftFlow.value = null
+        errorFlow.value = null
+    }
+
+    /**
+     * 功能：保存偏好
+     * 参数：无
+     * 返回：无
+     *
+     * 手写与"任务后确认"共用这一条保存路径：新建时来源记 USER_WRITTEN（置信度 1.0），
+     * 从任务上下文预填的草稿可以把来源改成 USER_TAUGHT（0.9），由调用方在草稿里带过来。
+     */
+    fun savePreferenceDraft() {
+        val draft = preferenceDraftFlow.value ?: return
+        if (draft.title.isBlank() || draft.content.isBlank()) {
+            errorFlow.value = "标题与内容不能为空"
+            return
+        }
+        viewModelScope.launch {
+            val existing = draft.id?.let { memoryDao.findPreference(it) }
+            val preference = Preference(
+                id = draft.id ?: UUID.randomUUID().toString(),
+                scope = draft.scope.trim().ifEmpty { null },
+                category = draft.category,
+                subject = draft.subject.trim().ifEmpty { null },
+                title = draft.title.trim(),
+                content = draft.content.trim(),
+                // 结构化值为空时退回正文：后续按值去重/匹配至少要有一份可用数据
+                value = draft.value.trim().ifEmpty { draft.content.trim() },
+                confidence = existing?.confidence ?: DEFAULT_PREFERENCE_CONFIDENCE,
+                source = existing?.let { runCatching { MemorySource.valueOf(it.source) }.getOrNull() }
+                    ?: MemorySource.USER_WRITTEN,
+                status = existing?.let { runCatching { MemoryStatus.valueOf(it.status) }.getOrNull() }
+                    ?: MemoryStatus.ACTIVE,
+                hitCount = existing?.hitCount ?: 0,
+                lastUsedAt = existing?.lastUsedAt ?: 0L,
+                createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+            )
+            runCatching { memoryDao.upsertPreference(ProcedureCodec.toEntity(preference)) }
+                .onSuccess {
+                    preferenceDraftFlow.value = null
+                    messageFlow.value = "已保存偏好「${preference.title}」"
+                }
+                .onFailure { errorFlow.value = it.message ?: "保存失败" }
+        }
+    }
+
+    /**
+     * 功能：切换偏好启停
+     * 参数：id 偏好标识
+     * 返回：无
+     */
+    fun togglePreference(id: String) {
+        viewModelScope.launch {
+            val entity = memoryDao.findPreference(id) ?: return@launch
+            val next = if (entity.status == MemoryStatus.ACTIVE.name) {
+                MemoryStatus.DISABLED.name
+            } else {
+                MemoryStatus.ACTIVE.name
+            }
+            memoryDao.updatePreferenceStatus(id, next)
         }
     }
 
@@ -319,13 +499,15 @@ class MemoryViewModel @Inject constructor(
     fun exportTo(uri: Uri) {
         viewModelScope.launch {
             runCatching {
-                val procedures = memoryDao.observeProcedures().first().map(ProcedureCodec::fromEntity)
-                val text = ProcedureCodec.encodeBundle(procedures)
+                val procedures = loadAllProcedures()
+                val preferences = memoryDao.observePreferences().first()
+                    .map(ProcedureCodec::fromEntity)
+                val text = ProcedureCodec.encodeBundle(procedures, preferences)
                 context.contentResolver.openOutputStream(uri)?.use { output ->
                     output.write(text.toByteArray())
                 } ?: error("无法写入所选文件")
-                procedures.size
-            }.onSuccess { count -> messageFlow.value = "已导出 $count 条配方" }
+                procedures.size + preferences.size
+            }.onSuccess { count -> messageFlow.value = "已导出 $count 条记忆（配方与偏好）" }
                 .onFailure { errorFlow.value = it.message ?: "导出失败" }
         }
     }
@@ -342,11 +524,16 @@ class MemoryViewModel @Inject constructor(
                     ?.bufferedReader()
                     ?.use { it.readText() }
                     ?: error("无法读取所选文件")
-                val procedures = ProcedureCodec.decodeBundle(text)
+                val bundle = ProcedureCodec.decodeBundle(text)
                     ?: error("不是 Mimir 导出的记忆文件")
-                procedures.forEach { memoryDao.upsertProcedure(ProcedureCodec.toEntity(it)) }
-                procedures.size
-            }.onSuccess { count -> messageFlow.value = "已导入 $count 条配方" }
+                // 逐条整树写入：导入文件里带的是 pages，旧文件只有 steps，
+                // ProcedureCodec 已在解码时按 pagePath 补好树。
+                bundle.procedures.forEach { persist(it) }
+                bundle.preferences.forEach {
+                    memoryDao.upsertPreference(ProcedureCodec.toEntity(it))
+                }
+                bundle.procedures.size + bundle.preferences.size
+            }.onSuccess { count -> messageFlow.value = "已导入 $count 条记忆（配方与偏好）" }
                 .onFailure { errorFlow.value = it.message ?: "导入失败" }
         }
     }
@@ -377,40 +564,94 @@ class MemoryViewModel @Inject constructor(
     }
 
     /**
-     * 功能：解析步骤文本
-     * 参数：text 每行一个动作
-     * 返回：步骤列表；有空行外的非法行时返回 null
+     * 功能：把配方与树整体写库
+     * 参数：procedure 配方
+     * 返回：无
+     *
+     * 事务内先删后插：保存是"整树替换"，几十个节点的规模做增量比对不值得，
+     * 反而容易在删除/移动后留下错位的 sort_order。
      */
-    private fun parseSteps(text: String): List<ProcedureStep>? {
-        val steps = mutableListOf<ProcedureStep>()
-        text.lines().map(String::trim).filter(String::isNotEmpty).forEach { line ->
-            val kindName = line.substringBefore(' ').uppercase()
-            val label = line.substringAfter(' ', "").trim()
-            val kind = runCatching { ActionKind.valueOf(kindName) }.getOrNull() ?: return null
-            if (kind == ActionKind.TAP || kind == ActionKind.TEXT) {
-                if (label.isEmpty()) return null
-            }
-            steps += ProcedureStep(
-                actionKind = kind,
-                anchor = label.takeIf { it.isNotEmpty() }?.let {
-                    Anchor(level = AnchorLevel.A2, text = it)
+    private suspend fun persist(procedure: Procedure) {
+        database.withTransaction {
+            memoryDao.upsertProcedure(ProcedureCodec.toEntity(procedure))
+            memoryDao.deleteActionsOf(procedure.id)
+            memoryDao.deletePagesOf(procedure.id)
+            memoryDao.upsertPages(
+                procedure.pages.mapIndexed { index, page ->
+                    ProcedurePageEntity(
+                        id = page.id,
+                        procedureId = procedure.id,
+                        title = page.title,
+                        pagePath = page.pagePath,
+                        signatureJson = ProcedureCodec.encodeStringsForTree(page.signature),
+                        sortOrder = index,
+                        createdAt = procedure.createdAt,
+                    )
                 },
-                pagePath = null,
+            )
+            memoryDao.upsertActions(
+                procedure.pages.flatMap { page ->
+                    page.actions.mapIndexed { index, action ->
+                        ProcedureActionEntity(
+                            id = action.id,
+                            procedureId = procedure.id,
+                            pageId = page.id,
+                            actionKind = action.actionKind.name,
+                            title = action.title,
+                            anchorJson = ProcedureCodec.encodeAnchor(action.anchor),
+                            slotsJson = ProcedureCodec.encodeSlots(action.parameterSlots),
+                            sortOrder = index,
+                        )
+                    }
+                },
             )
         }
-        return steps.ifEmpty { null }
     }
 
     /**
+     * 功能：读取一条配方的树
+     * 参数：procedureId 配方标识
+     * 返回：页面与动作组成的树
+     */
+    private suspend fun loadTree(procedureId: String): List<ProcedurePage> =
+        ProcedureTree.assemble(
+            pages = memoryDao.findPages(procedureId),
+            actions = memoryDao.findActions(procedureId),
+            anchorOf = ProcedureCodec::decodeAnchorOrNull,
+            slotsOf = ProcedureCodec::decodeSlots,
+        )
+
+    /**
+     * 功能：读取全部配方及其树
+     * 参数：无
+     * 返回：配方列表；导出与导入校验用
+     */
+    private suspend fun loadAllProcedures(): List<Procedure> =
+        memoryDao.observeProcedures().first().map { entity ->
+            ProcedureCodec.fromEntity(entity, loadTree(entity.id))
+        }
+
+    /**
+     * 功能：新建一个空页面节点
+     * 参数：无
+     * 返回：带随机标识的页面
+     */
+    private fun newPage(): ProcedurePage = ProcedurePage(
+        id = UUID.randomUUID().toString(),
+        title = "新页面",
+        pagePath = null,
+    )
+
+    /**
      * 功能：算稳定键
-     * 参数：draft 草稿
+     * 参数：packageName 包名；taskType 已归一化的任务类型；title 标题
      * 返回：包名 + 任务类型 + 标题的规范化摘要
      *
      * 手写配方的稳定键只取这三段：页面路径与前后置条件在编辑期拿不到，
      * 硬拼空串会让同一份配方在不同页面各生成一条。
      */
-    private fun stableKeyOf(draft: ProcedureDraft): String =
-        listOf(draft.packageName.trim(), draft.taskType.trim(), draft.title.trim()).joinToString("|")
+    private fun stableKeyOf(packageName: String, taskType: String, title: String): String =
+        listOf(packageName, taskType, title).joinToString("|")
 
     /**
      * 功能：读目标 App 的当前版本号
@@ -424,34 +665,45 @@ class MemoryViewModel @Inject constructor(
     private companion object {
         /** 没填任务类型时的兜底值，与 Planner 的默认值保持一致。 */
         const val DEFAULT_TASK_TYPE = "GENERAL"
+
+        /** 手写偏好的初始置信度；任务后确认的草稿由调用方改来源与置信度。 */
+        const val DEFAULT_PREFERENCE_CONFIDENCE = 1.0
     }
 }
 
 /**
- * 功能：把配方行转成展示模型
+ * 配方行与其树的组合。
+ *
+ * @property entity 配方主表行
+ * @property pages 该配方的页面/动作树
+ */
+private data class ProcedureWithTree(
+    val entity: ProcedureEntity,
+    val pages: List<ProcedurePage>,
+)
+
+/**
+ * 功能：把配方行与其树转成展示模型
  * 参数：无（扩展函数）
  * 返回：ProcedureRow
  */
-private fun ProcedureEntity.toRow(): ProcedureRow {
-    val procedure = ProcedureCodec.fromEntity(this)
+private fun ProcedureWithTree.toRow(): ProcedureRow {
+    val procedure = ProcedureCodec.fromEntity(entity, pages)
     return ProcedureRow(
-        id = id,
-        title = title,
-        packageName = packageName,
-        taskType = taskType,
-        status = status,
-        source = source,
-        confidence = confidence,
-        successCount = successCount,
-        failCount = failCount,
-        lastVerifiedAt = lastVerifiedAt,
+        id = entity.id,
+        title = entity.title,
+        packageName = entity.packageName,
+        taskType = entity.taskType,
+        status = entity.status,
+        source = entity.source,
+        confidence = entity.confidence,
+        successCount = entity.successCount,
+        failCount = entity.failCount,
+        lastVerifiedAt = entity.lastVerifiedAt,
         anchorsText = procedure.precondition.joinToString("\n") { it.text ?: it.resourceId.orEmpty() },
-        stepsText = procedure.steps.joinToString("\n") { step ->
-            val label = step.anchor?.text ?: step.anchor?.contentDescription.orEmpty()
-            if (label.isEmpty()) step.actionKind.name else "${step.actionKind.name} $label"
-        },
         postconditionText = procedure.postcondition.joinToString("\n"),
         signatureText = procedure.pageSignature.joinToString("\n"),
+        pages = pages,
     )
 }
 
@@ -462,10 +714,31 @@ private fun ProcedureEntity.toRow(): ProcedureRow {
  */
 private fun PreferenceEntity.toRow(): PreferenceRow = PreferenceRow(
     id = id,
+    category = runCatching { PreferenceCategory.valueOf(category) }
+        .getOrDefault(PreferenceCategory.GENERAL),
+    subject = subject,
     title = title,
     scope = scope ?: "全局",
     content = content,
+    value = value,
+    confidence = confidence,
     source = source,
+    status = status,
+)
+
+/**
+ * 功能：把偏好转成编辑草稿
+ * 参数：无（扩展函数）
+ * 返回：草稿
+ */
+private fun Preference.toDraft(): PreferenceDraft = PreferenceDraft(
+    id = id,
+    category = category,
+    subject = subject.orEmpty(),
+    title = title,
+    content = content,
+    value = value,
+    scope = scope.orEmpty(),
 )
 
 /**
@@ -479,12 +752,9 @@ private fun Procedure.toDraft(): ProcedureDraft = ProcedureDraft(
     packageName = packageName,
     taskType = taskType,
     anchors = precondition.joinToString("\n") { it.text ?: it.resourceId.orEmpty() },
-    steps = steps.joinToString("\n") { step ->
-        val label = step.anchor?.text ?: step.anchor?.contentDescription.orEmpty()
-        if (label.isEmpty()) step.actionKind.name else "${step.actionKind.name} $label"
-    },
     postcondition = postcondition.joinToString("\n"),
     signature = pageSignature.joinToString("\n"),
+    pages = pages,
 )
 
 /**

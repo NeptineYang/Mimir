@@ -4,6 +4,7 @@ import com.neptine.mimir.core.contract.RiskLevel
 import com.neptine.mimir.data.db.dao.AuditDao
 import com.neptine.mimir.data.db.entity.AuditEntity
 import com.neptine.mimir.data.db.entity.TaskEntity
+import com.neptine.mimir.data.remote.ChatUsage
 import javax.inject.Inject
 
 /**
@@ -24,18 +25,20 @@ class AuditRecorder @Inject constructor(private val auditDao: AuditDao) {
 
     /**
      * 功能：写一条没有观察上下文的系统审计
-     * 参数：task 任务；outcome 结果；result 说明；decision 处置字段
+     * 参数：task 任务；outcome 结果；result 说明；decision 处置字段；usage 本次模型调用用量
      * 返回：新记录的自增主键
      *
      * 用于恢复与核对这类"不发生在某一帧上"的事件；观察字段留空而不是编造一个 observationId。
      * 默认处置是 NEED_HUMAN（恢复与核对都会让人接手）；记忆写入这类"事情发生了但没拦任何东西"
      * 的事件传 ALLOW，别让审计里出现莫名其妙的"需要人工"。
+     * 规划器调用不落在某一帧上，用量也走这里记，否则成本统计会漏掉解析与规划两次调用。
      */
     suspend fun recordSystemEvent(
         task: TaskEntity,
         outcome: String,
         result: String,
         decision: String = "NEED_HUMAN",
+        usage: ChatUsage? = null,
     ): Long =
         record(
             AuditEntity(
@@ -65,6 +68,8 @@ class AuditRecorder @Inject constructor(private val auditDao: AuditDao) {
                 memoryUsed = null,
                 memoryAssertion = null,
                 imageTokens = 0,
+                promptTokens = usage?.promptTokens ?: 0,
+                completionTokens = usage?.completionTokens ?: 0,
                 screenshotBefore = null,
                 screenshotAfter = null,
             ),

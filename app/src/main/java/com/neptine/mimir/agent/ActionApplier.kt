@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import com.neptine.mimir.core.contract.ActionKind
 import com.neptine.mimir.core.contract.AgentAction
 import com.neptine.mimir.core.contract.DisplayHandle
+import com.neptine.mimir.core.contract.ObservationMode
 import com.neptine.mimir.core.contract.ObservationSnapshot
 import com.neptine.mimir.core.contract.Point
 import com.neptine.mimir.device.DeviceTransport
@@ -47,7 +48,11 @@ class ActionApplier @Inject constructor(
             delay(WAIT_MS)
             true
         }
-        ActionKind.TEXT -> textInput.type(handle, action)
+        ActionKind.TEXT -> textInput.type(
+            handle,
+            action,
+            visionOnly = snapshot?.mode == ObservationMode.VISION_ONLY,
+        )
         // 没有观察就无法复验包名与目标框；宁可不填，也不拿旧凭据盲填
         ActionKind.CREDENTIAL -> snapshot?.let { credentials.fill(handle, action, it) } ?: false
     }
@@ -67,6 +72,7 @@ class ActionApplier @Inject constructor(
             val ny = action.normY ?: return false
             val x = (nx * handle.spec.width / NORM_SCALE).coerceIn(0, handle.spec.width - 1)
             val y = (ny * handle.spec.height / NORM_SCALE).coerceIn(0, handle.spec.height - 1)
+            android.util.Log.d(TAG, "TAP 坐标 norm=($nx,$ny) 原生=($x,$y)")
             val pressMs = Random.nextLong(MIN_PRESS_MS, MAX_PRESS_MS)
             return transport.inputs.tap(handle, Point(x, y), pressMs)
         }
@@ -76,11 +82,19 @@ class ActionApplier @Inject constructor(
             x = (center.x + Random.nextInt(-JITTER_PX, JITTER_PX + 1)).coerceIn(bounds.left, bounds.right),
             y = (center.y + Random.nextInt(-JITTER_PX, JITTER_PX + 1)).coerceIn(bounds.top, bounds.bottom),
         )
+        android.util.Log.d(
+            TAG,
+            "TAP 元素 bounds=(${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}) " +
+                "落点=(${jittered.x},${jittered.y})",
+        )
         val pressMs = Random.nextLong(MIN_PRESS_MS, MAX_PRESS_MS)
         return transport.inputs.tap(handle, jittered, pressMs)
     }
 
     private companion object {
+        /** 点击诊断日志标签；与 MimirOcr 的 bounds 对照可确认落点是否命中。 */
+        const val TAG = "MimirTap"
+
         /** 归一化坐标的满量程（0–1000）。 */
         const val NORM_SCALE = 1000
 

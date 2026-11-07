@@ -22,11 +22,14 @@ shizuku = "13.1.5"
 hiltNavigationCompose = "1.4.0"
 # 模型 API Key 的加密存储（设计文档 §4.6）。
 securityCrypto = "1.1.0"
+# JVM 单测：只覆盖不依赖 Android 的纯判定（预设授权边界）。
+junit = "4.13.2"
 # 端侧 OCR（设计文档 §2.3.2）：纯视觉降级时用中文文本识别补出元素表。
 # bundled 版把中文模型打进 APK，不依赖设备上的 Play 服务下载。
 mlkitTextChinese = "16.0.0"
 
 [libraries]
+junit = { module = "junit:junit", version.ref = "junit" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }

@@ -1,9 +1,15 @@
-# 项目内工具链
+# 本机私有资料、签名材料与工具记忆
+.local/
+.workbuddy/
+.screenshots/
+
+# 项目内工具链与缓存
 .toolchain/
 .gradle-home/
+.gradle/
+.kotlin/
 
 # Android / Gradle
-.gradle/
 build/
 local.properties
 *.apk
@@ -13,24 +19,45 @@ local.properties
 captures/
 release/
 
-# IDE
+# IDE 与诊断产物
 .idea/
 *.iml
 *.hprof
-
-# Kotlin
-.kotlin/
-
-# 签名与密钥
-*.jks
-*.keystore
-keystore.properties
-secrets.properties
-
-# 临时产物
-*.zip
 *.log
 *.tmp
+.tmp/
+*.raw
+__pycache__/
+*.pyc
 
+# 签名、密钥与本地环境
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+keystore.properties
+secrets.properties
+.env
+.env.*
+!.env.example
 
-大肥鱼作业.mp4
+# 本机专用构建入口；公开构建使用 Android Studio 或 Gradle Wrapper
+scripts/env.ps1
+scripts/env.sh
+scripts/gradle.ps1
+scripts/gradle.sh
+scripts/setup-env.ps1
+
+# 本地素材、运行数据与大型压缩/视频文件
+参考素材/
+前端美术参考/
+*.zip
+*.mp4
+*.db
+*.db-wal
+*.db-shm
+
+# 端侧语音识别依赖：由 scripts/fetch-asr-assets.py 下载并校验
+app/libs/
+app/src/main/assets/asr/

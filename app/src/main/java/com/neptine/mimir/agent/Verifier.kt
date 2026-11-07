@@ -87,6 +87,7 @@ class Verifier @Inject constructor() {
         adopted: EvidenceOutcome? = null,
         readback: ObservationSnapshot? = null,
         viewTask: Boolean = false,
+        readbackPackage: String? = null,
     ): VerificationResult {
         // 查看类任务的完成物就是"目标页面本身"：字段文案是计划期盲猜的，
         // 猜"cats"这种抽象词必然初验失败。核对应换成"目标 App 仍停在副屏前台"。
@@ -117,19 +118,27 @@ class Verifier @Inject constructor() {
             // 没有注册路线的 App：退一步做"同页重读"——隔一段时间重新观察同一页，
             // 用一份**新的**快照再核对一遍。它挡不住缓存页，但能挡住单帧幻读与模型自述，
             // 比"什么都不验"强，也比"永远到不了成功终态"更有用。
-            if (readback != null && readback.observationId != primary.observationId) {
-                val again = if (viewTask) checkForeground(spec, readback, "重读") else check(spec, readback, "重读")
-                if (again.passed) {
-                    return VerificationResult(
-                        outcome = VerificationOutcome.DONE_READBACK,
-                        evidence = listOf(first.evidence, again.evidence),
-                        note = "没有注册复验路线，改用同页二次读取复核",
-                    )
-                }
+            //
+            // 查看类任务例外：视频/直播页一直在动，永远等不到"一致观察"，用整帧快照
+            // 会把成功判成未复验（真机 B 站实测）。这类任务的重读只回答"目标 App 还在不在前台"，
+            // 前台包名就足够，而且不需要一帧安静的页面。
+            val again = when {
+                viewTask && readbackPackage != null ->
+                    checkForegroundPackage(spec, readbackPackage, "重读")
+                readback != null && readback.observationId != primary.observationId ->
+                    if (viewTask) checkForeground(spec, readback, "重读") else check(spec, readback, "重读")
+                else -> null
+            }
+            if (again?.passed == true) {
+                return VerificationResult(
+                    outcome = VerificationOutcome.DONE_READBACK,
+                    evidence = listOf(first.evidence, again.evidence),
+                    note = "没有注册复验路线，改用同页二次读取复核",
+                )
             }
             val reason = buildString {
-                append("初验通过；未做独立结果页复验")
-                secondaryUnreachable?.takeIf { it.isNotBlank() }?.let { append("：$it") }
+                append("已完成；该应用没有独立的复验入口，未做二次核对")
+                secondaryUnreachable?.takeIf { it.isNotBlank() }?.let { append("。技术原因：$it") }
             }
             return VerificationResult(
                 outcome = VerificationOutcome.COMPLETED_UNVERIFIED,
@@ -185,14 +194,38 @@ class Verifier @Inject constructor() {
     private fun checkForeground(spec: TaskSpec, snapshot: ObservationSnapshot, label: String): FieldCheck {
         val evidence = "$label：${snapshot.packageName}/${snapshot.activityName}" +
             "（${snapshot.elements.size} 个元素，观察 ${snapshot.observationId.take(8)}）"
-        val hit = snapshot.packageName == spec.packageName
+        return foregroundCheck(spec, snapshot.packageName, label, evidence)
+    }
+
+    /**
+     * 功能：只按前台包名核对"目标 App 还在不在前台"
+     * 参数：spec 任务约束；packageName 当前前台包名；label 这一路的名称
+     * 返回：字段级核对结果
+     *
+     * 查看类任务的重读用它：页面在播视频时拿不到一致观察，但前台包名随时可读。
+     */
+    private fun checkForegroundPackage(spec: TaskSpec, packageName: String, label: String): FieldCheck =
+        foregroundCheck(spec, packageName, label, "$label：前台 $packageName")
+
+    /**
+     * 功能：前台包名与任务目标的比对
+     * 参数：spec 任务约束；packageName 当前前台包名；label 名称；evidence 证据串
+     * 返回：字段级核对结果
+     */
+    private fun foregroundCheck(
+        spec: TaskSpec,
+        packageName: String,
+        label: String,
+        evidence: String,
+    ): FieldCheck {
+        val hit = packageName == spec.packageName
         return if (hit) {
             FieldCheck(true, evidence, null)
         } else {
             FieldCheck(
                 false,
                 evidence,
-                "$label 未通过：目标 App 已不在副屏前台（当前 ${snapshot.packageName}），结果页无法交付",
+                "$label 未通过：目标 App 已不在副屏前台（当前 $packageName），结果页无法交付",
             )
         }
     }

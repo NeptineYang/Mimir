@@ -4,6 +4,7 @@ import com.neptine.mimir.core.contract.ObservationSnapshot
 import com.neptine.mimir.core.contract.TaskSpec
 import com.neptine.mimir.data.config.ModelConfigRepository
 import com.neptine.mimir.data.remote.ChatMessage
+import com.neptine.mimir.data.remote.ChatOptions
 import com.neptine.mimir.data.remote.LlmClient
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -110,6 +111,8 @@ class EvidenceReviewer @Inject constructor(
                 ChatMessage(role = "system", content = system),
                 ChatMessage(role = "user", content = user),
             ),
+            // 只是从页面文本里挑出能证明完成的句子，不需要深度推理
+            options = ChatOptions(reasoningEffort = "low", maxTokens = 1024),
         )
         return response.choices.firstOrNull()?.message?.content.orEmpty()
     }

@@ -12,6 +12,7 @@ import androidx.navigation.navArgument
 import com.neptine.mimir.ui.screen.AuditScreen
 import com.neptine.mimir.ui.screen.CredentialScreen
 import com.neptine.mimir.ui.screen.MemoryScreen
+import com.neptine.mimir.ui.screen.ScheduledTaskScreen
 import com.neptine.mimir.ui.screen.SettingsScreen
 import com.neptine.mimir.ui.screen.TakeoverScreen
 import com.neptine.mimir.ui.onboarding.Onboarding
@@ -32,6 +33,9 @@ const val ROUTE_MEMORY = "memory"
 
 /** 凭据页：普通登录密码的加密存储，全屏展示、不挂底栏。 */
 const val ROUTE_CREDENTIALS = "credentials"
+
+/** 定时任务页：设定时间让 Agent 自动执行，全屏展示、不挂底栏。 */
+const val ROUTE_SCHEDULED = "scheduled"
 
 /** 路由参数名：任务标识。审计页与接管页共用。 */
 const val ARG_TASK_ID = "taskId"
@@ -82,7 +86,10 @@ fun MimirNavHost(
         modifier = modifier,
     ) {
         composable(ROUTE_TASK) {
-            TaskScreen(onOpenTakeover = { taskId -> navController.navigate(routeTakeover(taskId)) })
+            TaskScreen(
+                onOpenTakeover = { taskId -> navController.navigate(routeTakeover(taskId)) },
+                onOpenSettings = { navController.navigateToTab(MimirTab.SETTINGS) },
+            )
         }
         composable(ROUTE_HISTORY) {
             HistoryScreen(
@@ -103,6 +110,7 @@ fun MimirNavHost(
             SettingsScreen(
                 onOpenMemory = { navController.navigate(ROUTE_MEMORY) },
                 onOpenCredentials = { navController.navigate(ROUTE_CREDENTIALS) },
+                onOpenScheduled = { navController.navigate(ROUTE_SCHEDULED) },
             )
         }
         composable(ROUTE_MEMORY) {
@@ -110,6 +118,9 @@ fun MimirNavHost(
         }
         composable(ROUTE_CREDENTIALS) {
             CredentialScreen(onBack = { navController.popBackStack() })
+        }
+        composable(ROUTE_SCHEDULED) {
+            ScheduledTaskScreen(onBack = { navController.popBackStack() })
         }
         composable(
             route = ROUTE_TAKEOVER,

@@ -1,6 +1,7 @@
 package com.neptine.mimir.data.config
 
 import com.neptine.mimir.data.remote.ChatMessage
+import com.neptine.mimir.data.remote.ChatOptions
 import com.neptine.mimir.data.remote.LlmClient
 import javax.inject.Inject
 
@@ -36,6 +37,8 @@ class ModelHealthChecker @Inject constructor(
                 messages = listOf(
                     ChatMessage(role = "user", content = PING_PROMPT),
                 ),
+                // 自检只要一句回复：低思考 + 小上限，避免"测个连通性等两分钟"
+                options = ChatOptions(reasoningEffort = "low", maxTokens = 512),
             )
             val reply = response.choices.firstOrNull()?.message?.content?.trim().orEmpty()
             val elapsedMs = System.currentTimeMillis() - startedAt

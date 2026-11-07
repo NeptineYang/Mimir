@@ -1,10 +1,38 @@
 package com.neptine.mimir.data.db.dao
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
 import com.neptine.mimir.data.db.entity.AuditEntity
 import kotlinx.coroutines.flow.Flow
+
+/**
+ * 统计面板需要的审计投影（设计文档 §5.4）。
+ *
+ * 只取聚合用得到的列：审计行的模型原始输出与截图路径很大，统计不需要它们。
+ *
+ * @property taskId 归属任务
+ * @property stepIndex 任务内步序；与 taskId 一起构成"这一步"的唯一键
+ * @property outcome 本步结论
+ * @property memoryUsed 本步注入的配方；空表示未命中
+ * @property totalMs 本步合计耗时；0 表示没有计时（v6 之前的记录或系统事件）
+ * @property observeMs 观察段耗时
+ * @property decideMs 决策段耗时
+ * @property actMs 注入与判定段耗时
+ * @property actionKind 动作类型；空表示这一步没有落到设备上的动作
+ */
+data class AuditStatsRow(
+    @ColumnInfo(name = "task_id") val taskId: String,
+    @ColumnInfo(name = "step_idx") val stepIndex: Int,
+    @ColumnInfo(name = "outcome") val outcome: String?,
+    @ColumnInfo(name = "memory_used") val memoryUsed: String?,
+    @ColumnInfo(name = "total_ms") val totalMs: Long,
+    @ColumnInfo(name = "observe_ms") val observeMs: Long,
+    @ColumnInfo(name = "decide_ms") val decideMs: Long,
+    @ColumnInfo(name = "act_ms") val actMs: Long,
+    @ColumnInfo(name = "action_kind") val actionKind: String,
+)
 
 /** 每步审计的读写口（设计文档 §4.4）。 */
 @Dao
@@ -59,6 +87,34 @@ interface AuditDao {
      */
     @Query("SELECT * FROM audit WHERE task_id = :taskId AND action_kind <> '' ORDER BY id ASC")
     suspend fun actionsOf(taskId: String): List<AuditEntity>
+
+    /**
+     * 功能：取某任务最近一张动作后截图
+     * 参数：taskId 任务标识
+     * 返回：截图绝对路径；没有留存画面时为 null
+     *
+     * 任务卡用它显示"agent 现在停在哪一页"，比一句进度文字直观。
+     */
+    @Query(
+        "SELECT screenshot_after FROM audit WHERE task_id = :taskId " +
+            "AND screenshot_after IS NOT NULL AND screenshot_after <> '' " +
+            "ORDER BY id DESC LIMIT 1",
+    )
+    suspend fun latestScreenshot(taskId: String): String?
+
+    /**
+     * 功能：取统计面板需要的全部审计投影
+     * 参数：无
+     * 返回：按写入顺序的全部审计行（只含统计用到的列）
+     *
+     * 不做 SQL 聚合而由调用方在内存里归类：失败分类的口径经常要随答辩口径调整，
+     * 写在 Kotlin 里比每次改 SQL 更容易核对；当前任务量（百级）也不值得上聚合表。
+     */
+    @Query(
+        "SELECT task_id, step_idx, outcome, memory_used, total_ms, observe_ms, decide_ms, act_ms, action_kind " +
+            "FROM audit ORDER BY id ASC",
+    )
+    fun observeStatsRows(): Flow<List<AuditStatsRow>>
 
     /**
      * 功能：删除某任务的全部审计记录

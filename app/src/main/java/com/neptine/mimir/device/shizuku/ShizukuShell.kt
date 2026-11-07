@@ -109,6 +109,10 @@ class ShizukuShell(private val context: Context) {
 
             val connection = object : ServiceConnection {
                 override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                    // 绑定回调可能重复到达（服务重启、Shizuku 重连、daemon=false 重新拉起）。
+                    // 协程已经拿到结果时再 resume 会抛 "Already resumed"，异常发生在主线程
+                    // Looper 里，直接把整个进程带崩——表现为用户看到"应用没有响应"。
+                    if (!continuation.isActive) return
                     val service = binder?.let { IMimirShell.Stub.asInterface(it) }
                     if (service == null) {
                         continuation.resumeWithException(IllegalStateException("UserService binder 为空"))
@@ -125,7 +129,8 @@ class ShizukuShell(private val context: Context) {
             try {
                 Shizuku.bindUserService(args, connection)
             } catch (e: Throwable) {
-                continuation.resumeWithException(e)
+                // 绑定调用本身失败与回调失败可能同时发生，同样只在协程还活着时收尾。
+                if (continuation.isActive) continuation.resumeWithException(e)
             }
         }
     }
@@ -140,9 +145,11 @@ class ShizukuShell(private val context: Context) {
         /**
          * UserService 版本；服务实现变更时递增，用于让 Shizuku 重建进程。
          *
-         * 22：置顶成功返回码补上 START_TASK_TO_FRONT(2)；21：置顶增加
-         * am start + REORDER_TO_FRONT 兜底；20：剪贴板走 IClipboard 显式 callingPackage。
+         * 24：回收遗留副屏前先结束同包的旧 shell 进程（装包后会残留）；
+         * 23：新增遗留副屏回收（reapDisplays）；22：置顶成功返回码补上
+         * START_TASK_TO_FRONT(2)；21：置顶增加 am start + REORDER_TO_FRONT 兜底；
+         * 20：剪贴板走 IClipboard 显式 callingPackage。
          */
-        const val USER_SERVICE_VERSION = 22
+        const val USER_SERVICE_VERSION = 24
     }
 }

@@ -22,15 +22,15 @@
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
-    <!-- 任务页的按住说话：录音交给系统语音识别服务，本应用不落盘、不外发。 -->
+    <!-- 任务页的按住说话：录音在本机交给 sherpa-onnx 识别，音频不落盘、不出设备。 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 定时任务：到点点亮屏幕让虚拟屏可读（息屏时窗口根节点不可读）。 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 定时任务准点触发；用户关闭精确闹钟时退化为不精确调度。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 开机后重排闹钟。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- API 30+ 包可见性：不声明就查不到语音识别服务，isRecognitionAvailable 会误报为不可用。 -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-    </queries>
 
     <application
         android:name=".MimirApplication"
@@ -98,6 +98,20 @@
         <receiver
             android:name=".service.HandoffReceiver"
             android:exported="false" />
+
+        <!-- 定时任务闹钟：只把触发转交前台服务，执行逻辑不在接收器里。 -->
+        <receiver
+            android:name=".service.schedule.ScheduledTaskReceiver"
+            android:exported="false" />
+
+        <!-- 开机后重排定时任务；没有这一步，重启等于把用户的定时任务清空。 -->
+        <receiver
+            android:name=".service.schedule.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Shizuku：四属性必须齐全，authority 固定为 ${applicationId}.shizuku。 -->
         <provider

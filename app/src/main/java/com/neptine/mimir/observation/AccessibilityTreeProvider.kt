@@ -1,5 +1,6 @@
 package com.neptine.mimir.observation
 
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -54,12 +55,15 @@ class AccessibilityTreeProvider : TreeProvider {
 
         val minSidePx = 24f * handle.spec.dpi / 160f
         val collector = Collector(handle.spec.width, handle.spec.height, minSidePx.toInt())
+        val startedAt = SystemClock.elapsedRealtime()
         collector.visit(root, ancestorPath = "")
         Log.d(
             TAG,
             "display=${handle.displayId} windows=${windows.size} title=${rootWindow.title} " +
                 "pkg=${root.packageName} children=${root.childCount} kept=${collector.kept.size} " +
-                "visited=${collector.visited} sample=${collector.sample} dropped=${collector.dropped}",
+                "visited=${collector.visited} skipped=${collector.skipped} " +
+                "truncated=${collector.truncated} 耗时=${SystemClock.elapsedRealtime() - startedAt}ms " +
+                "sample=${collector.sample} dropped=${collector.dropped}",
         )
 
         return@withContext TreeFrame(
@@ -144,6 +148,14 @@ class AccessibilityTreeProvider : TreeProvider {
         var visited = 0
             private set
 
+        /** 因整棵子树在屏外而被跳过的节点数，用于诊断。 */
+        var skipped = 0
+            private set
+
+        /** 达到遍历上限后停止深入的节点数，用于诊断。 */
+        var truncated = 0
+            private set
+
         /** 前几个节点的摘要，用于诊断"树为什么是空的"。 */
         val sample = mutableListOf<String>()
 
@@ -160,17 +172,41 @@ class AccessibilityTreeProvider : TreeProvider {
          */
         @Suppress("DEPRECATION")
         fun visit(node: AccessibilityNodeInfo, ancestorPath: String): String {
+            visited++
+            val rect = android.graphics.Rect()
+            node.getBoundsInScreen(rect)
+            val visible = node.isVisibleToUser
+
+            // 不可见节点连同子树一起剪掉：父节点不可见时子节点也不会被绘制或命中，
+            // 而逐个读属性都是跨进程调用。美团外卖页 421 个节点实测一次遍历要 1.5–2.3 秒，
+            // 其中大半是隐藏的弹窗层、离屏 banner 与回收站里的列表项。
+            if (!visible) {
+                skipped++
+                return ""
+            }
+            // 整棵子树都在屏外同样剪掉：RecyclerView 会保留大量离屏 item，
+            // 离屏元素本来就不会进入元素表。
+            if (!rect.isEmpty &&
+                (rect.right <= 0 || rect.bottom <= 0 || rect.left >= width || rect.top >= height)
+            ) {
+                skipped++
+                return ""
+            }
+            // 极端复杂的页面（上万节点）再遍历下去只会把一步拖成几十秒；
+            // 到上限就停止深入，日志里的 truncated 计数用于判断上限是否过紧。
+            if (visited > MAX_VISITED) {
+                truncated++
+                return ""
+            }
+
             val className = node.className?.toString().orEmpty()
             val text = node.text?.toString().orEmpty()
             val description = node.contentDescription?.toString().orEmpty()
             val clickable = node.isClickable
             val editable = node.isEditable
-            val rect = android.graphics.Rect()
-            node.getBoundsInScreen(rect)
 
-            visited++
             if (sample.size < SAMPLE_LIMIT) {
-                sample += "$className|vis=${node.isVisibleToUser}|clk=$clickable|" +
+                sample += "$className|vis=$visible|clk=$clickable|" +
                     "${rect.left},${rect.top},${rect.right},${rect.bottom}|$text"
             }
 
@@ -189,9 +225,9 @@ class AccessibilityTreeProvider : TreeProvider {
             val subtreeLabel = childLabels.filter { it.isNotEmpty() }.joinToString(" ")
             val label = ownLabel.ifEmpty { subtreeLabel.take(LABEL_LIMIT) }
 
-            if (!isRetained(node, className, text, description, clickable, editable, rect)) {
+            if (!isRetained(visible, className, text, description, clickable, editable, rect)) {
                 if (ownLabel.isNotEmpty() && dropped.size < SAMPLE_LIMIT) {
-                    dropped += "$className|vis=${node.isVisibleToUser}|" +
+                    dropped += "$className|vis=$visible|" +
                         "${rect.width()}x${rect.height()}|$ownLabel"
                 }
                 return label
@@ -216,12 +252,12 @@ class AccessibilityTreeProvider : TreeProvider {
 
         /**
          * 功能：判断单节点是否满足保留规则
-         * 参数：node 节点；className 类名；text 文本；description 无障碍描述；
+         * 参数：visible 是否对用户可见；className 类名；text 文本；description 无障碍描述；
          *       clickable/editable 可操作性；rect 屏幕范围
          * 返回：保留为 true
          */
         private fun isRetained(
-            node: AccessibilityNodeInfo,
+            visible: Boolean,
             className: String,
             text: String,
             description: String,
@@ -229,7 +265,7 @@ class AccessibilityTreeProvider : TreeProvider {
             editable: Boolean,
             rect: android.graphics.Rect,
         ): Boolean {
-            if (!node.isVisibleToUser) return false
+            if (!visible) return false
             if (rect.isEmpty) return false
             // 完全在屏外
             if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= width || rect.top >= height) return false
@@ -261,5 +297,8 @@ class AccessibilityTreeProvider : TreeProvider {
 
         /** 子树聚合文本的长度上限，避免整页容器把所有文案拼成一条。 */
         const val LABEL_LIMIT = 80
+
+        /** 单帧最多遍历的节点数：每个节点属性访问都是跨进程调用，大列表页必须设上限。 */
+        const val MAX_VISITED = 1200
     }
 }

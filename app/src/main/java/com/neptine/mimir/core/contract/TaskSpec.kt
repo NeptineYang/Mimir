@@ -41,6 +41,15 @@ data class TaskSpec(
 
     /** 预算。 */
     val budget: TaskBudget,
+
+    /**
+     * 定时任务的预设授权：到点无人值守时自动批准 L2A 动作。
+     *
+     * 只对 L2A 生效，L2B（支付/验证码/人脸）仍由 Guard 硬阻断。
+     * 与 `riskGrants` 的一次性授权是两套语义：预设授权不绑定某个具体动作，
+     * 执行时仍要按当前页面重新断言目标；开启它的定时任务必须在界面上明确告知用户。
+     */
+    val autoApproveL2a: Boolean = false,
 )
 
 /**
@@ -124,5 +133,8 @@ data class TaskBudget(
     // 20 分钟在 18 步处被判死。放长只是给"慢模型 + 长链路"留余量，步数与调用数上限不变。
     val maxDurationMs: Long = 30 * 60 * 1000L,
     val maxModelCalls: Int = 60,
-    val maxStepDurationMs: Long = 20_000L,
+    // 120 秒：取消式超时不是"事后判定"，一旦触发就会打断这次模型调用。
+    // 20 秒在 glm-5.3-flash 上过严（实测 ttfb 常见 10–35 秒、长尾 200 秒），
+    // 会在第 1–2 步就把正常波动的任务判死；120 秒覆盖 P95，长尾仍会被取消。
+    val maxStepDurationMs: Long = 120_000L,
 )

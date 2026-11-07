@@ -21,15 +21,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
+ * 结果通知渠道标识。
+ *
+ * 渠道创建后重要性不可改，必须换 id 才能把 LOW 升成 HIGH；旧渠道建时删掉。
+ * 这个常量被设置页用来读渠道当前重要性、判断横幅能不能弹，两处必须一致。
+ */
+const val RESULT_CHANNEL_ID = "mimir_result_v2"
+
+/**
  * 人工交接通知（设计文档 §4.3）。
  *
  * 交接不是"停下等用户"，而是"副屏暂停 + 通知栏挂起"：用户可以在任何时刻处理，
- * agent 不占屏、不弹窗、不震动打断。通知渠道用 LOW 重要性，代价是用户可能晚一点看到，
- * 换来的是不打断主屏使用——这正是本项目的主约束。
+ * agent 不占屏。交接渠道用 HIGH 重要性，会以横幅弹出并短促震动——
+ * 早期用 LOW 是怕打扰，但代价是用户根本注意不到任务停在那里。
  *
  * 两档动作集合不同，不能合并：L2A 提供「继续一次 / 放弃 / 我来处理」；
  * L2B 只有「放弃 / 我来处理」，因为支付、密码、验证码只能由本人完成。
  * 共享状态冲突、前台不符这类可自行恢复的挂起提供「继续」，但不签发任何授权。
+ *
+ * 任务结果走独立渠道（§4.1 完成报告）：横幅弹出但静音无振动，
+ * 让用户当场知道"任务完成了"，又不像交接那样急着要人接手。
  */
 @Singleton
 class HandoffNotifier @Inject constructor(
@@ -109,7 +120,10 @@ class HandoffNotifier @Inject constructor(
             .setContentTitle(resultTitle(state))
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            // 渠道重要性决定横幅是否弹出（Android 8 起通知自身的 priority 只影响旧版本），
+            // 这里的 priority 与 visibility 是双保险，也覆盖 Android 7 及以下的真机。
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(if (openResult) resultIntent(taskId) else mainIntent(taskId))
@@ -333,19 +347,26 @@ class HandoffNotifier @Inject constructor(
      * 参数：无
      * 返回：无
      *
-     * 同样用 LOW：结果只供回看，不需要横幅弹出打断主屏（不打断是项目的主约束）。
+     * 重要性用 HIGH：结果通知必须在主屏当前任何状态下弹出横幅（含锁屏），
+     * 用户才能当场知道"任务完成了"，而不是事后自己去翻通知栏。
+     * 渠道创建后重要性不可修改，因此这里换新 id 重建，并删掉旧的 LOW 渠道，
+     * 免得系统通知设置里留下一个再也不用的同名渠道。
      */
     private fun ensureResultChannel() {
         val channel = NotificationChannel(
             CHANNEL_RESULT_ID,
             context.getString(R.string.result_channel_name),
-            NotificationManager.IMPORTANCE_LOW,
+            NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = context.getString(R.string.result_channel_description)
+            // 只用横幅提示，不出声也不震动：任务完成不该突然打断正在看手机的人。
             setSound(null, null)
             enableVibration(false)
+            // 锁屏也要看得见，否则黑屏状态下只剩一句"内容已隐藏"。
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
         manager().createNotificationChannel(channel)
+        manager().deleteNotificationChannel(LEGACY_RESULT_CHANNEL_ID)
     }
 
     /**
@@ -405,7 +426,11 @@ class HandoffNotifier @Inject constructor(
         const val CHANNEL_ID = "mimir_handoff_v2"
 
         /** 结果通知渠道标识。 */
-        const val CHANNEL_RESULT_ID = "mimir_result"
+        // 渠道创建后重要性不可改，必须换 id 才能把 LOW 升成 HIGH；旧渠道建时删掉。
+        const val CHANNEL_RESULT_ID = RESULT_CHANNEL_ID
+
+        /** 旧的结果通知渠道标识（LOW 重要性），只用于删除。 */
+        const val LEGACY_RESULT_CHANNEL_ID = "mimir_result"
 
         /** 通知标识基数；与前台服务保活通知（1001）错开。 */
         const val NOTIFICATION_ID_BASE = 1100

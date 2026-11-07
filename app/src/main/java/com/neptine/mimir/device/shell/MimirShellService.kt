@@ -56,6 +56,19 @@ class MimirShellService : IMimirShell.Stub() {
     override fun destroyDisplay(displayId: Int) = displays.destroy(displayId)
 
     /**
+     * 功能：回收调用方已不再持有的虚拟屏
+     * 参数：keepDisplayId 需要保留的屏；-1 表示全部销毁
+     * 返回：销毁的屏数量
+     *
+     * 先清掉上一轮遗留的 shell 进程：它们的虚拟屏句柄在本进程里看不到，
+     * 只能靠结束进程让系统释放。清理后本进程的 sessions 才是全部存量。
+     */
+    override fun reapDisplays(keepDisplayId: Int): Int {
+        ShellJanitor.killSiblings()
+        return displays.reap(keepDisplayId)
+    }
+
+    /**
      * 功能：抓取一帧副屏画面
      * 参数：displayId 目标屏；timeoutMs 取帧超时（毫秒）
      * 返回：WebP 字节；取帧失败返回 null

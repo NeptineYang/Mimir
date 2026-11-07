@@ -126,6 +126,30 @@ data class AuditEntity(
     @ColumnInfo(name = "image_tokens")
     val imageTokens: Int,
 
+    /** 本步模型调用的输入 token（后端返回的实测值；不返回时为 0）。 */
+    @ColumnInfo(name = "prompt_tokens", defaultValue = "0")
+    val promptTokens: Int = 0,
+
+    /** 本步模型调用的输出 token（含思考；后端不返回时为 0）。 */
+    @ColumnInfo(name = "completion_tokens", defaultValue = "0")
+    val completionTokens: Int = 0,
+
+    /** 一致观察耗时（毫秒）；没有计时的系统事件行为 0。 */
+    @ColumnInfo(name = "observe_ms", defaultValue = "0")
+    val observeMs: Long = 0,
+
+    /** 模型决策耗时（毫秒，含解析重试）；没有计时的行为 0。 */
+    @ColumnInfo(name = "decide_ms", defaultValue = "0")
+    val decideMs: Long = 0,
+
+    /** 注入、等待稳定与后置条件判定的耗时（毫秒）；没有计时的行为 0。 */
+    @ColumnInfo(name = "act_ms", defaultValue = "0")
+    val actMs: Long = 0,
+
+    /** 本步合计耗时（毫秒）；等于前三段之和，便于聚合时直接 AVG。 */
+    @ColumnInfo(name = "total_ms", defaultValue = "0")
+    val totalMs: Long = 0,
+
     /** 动作前截图路径（应用私有目录）。 */
     @ColumnInfo(name = "screenshot_before")
     val screenshotBefore: String?,

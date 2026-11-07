@@ -18,6 +18,16 @@ interface IMimirShell {
     void destroyDisplay(int displayId);
 
     /**
+     * 回收本服务创建、但调用方已经不再持有的虚拟屏。
+     * keepDisplayId 为需要保留的屏（没有则传 -1）。
+     * 返回销毁的屏数量。
+     *
+     * 存在意义：结果页保留计时器只活在 app 进程里，重装或进程重启后计时器丢失，
+     * 副屏会作为孤儿留在系统中，反复累积到虚拟屏资源退化（真机需重启手机才能恢复）。
+     */
+    int reapDisplays(int keepDisplayId);
+
+    /**
      * 抓取一帧画面，返回 WebP 编码字节；无法取帧时返回 null。
      * timeoutMs 为单次取帧超时。
      */

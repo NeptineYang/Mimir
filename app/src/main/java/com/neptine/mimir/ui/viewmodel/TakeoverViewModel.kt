@@ -8,6 +8,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.neptine.mimir.agent.Orchestrator
+import com.neptine.mimir.agent.TextInput
+import com.neptine.mimir.core.contract.ActionKind
+import com.neptine.mimir.core.contract.AgentAction
 import com.neptine.mimir.core.contract.CaptureSource
 import com.neptine.mimir.core.contract.DisplayHandle
 import com.neptine.mimir.core.contract.Point
@@ -53,6 +56,17 @@ data class PreviewFrame(
 )
 
 /**
+ * 接管页本地输入框的写入结果。
+ *
+ * @property message 给用户看的一句话
+ * @property ok 是否写入成功
+ */
+data class LocalWriteResult(
+    val message: String,
+    val ok: Boolean,
+)
+
+/**
  * 接管页状态持有者。
  *
  * 实时画面不追求固定 15–30fps：PixelCopy 单帧实测 137–210ms，物理上限约 5–7fps。
@@ -67,6 +81,7 @@ class TakeoverViewModel @Inject constructor(
     private val auditShots: AuditScreenshotStore,
     private val activeDisplay: ActiveDisplayRegistry,
     private val transport: DeviceTransport,
+    private val textInput: TextInput,
     private val orchestrator: Orchestrator,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
@@ -110,6 +125,29 @@ class TakeoverViewModel @Inject constructor(
 
     /** 接管档开关；false 时为查看档（只读预览）。 */
     val takeover: StateFlow<Boolean> = _takeover.asStateFlow()
+
+    private val _localText = MutableStateFlow("")
+
+    /** 接管页本地输入框的正文；只存在于内存，写完即清空。 */
+    val localText: StateFlow<String> = _localText.asStateFlow()
+
+    private val _writeResult = MutableStateFlow<LocalWriteResult?>(null)
+
+    /** 最近一次「写入副屏」的结果；进入接管档或重新输入时清空。 */
+    val writeResult: StateFlow<LocalWriteResult?> = _writeResult.asStateFlow()
+
+    private val _writing = MutableStateFlow(false)
+
+    /** 是否正在写入；按钮据此置灰，避免连点写出两份。 */
+    val writing: StateFlow<Boolean> = _writing.asStateFlow()
+
+    /**
+     * 用户在预览里最后点下的位置（归一化）。
+     *
+     * 写入副屏时用它指定目标：多输入框页面里不能靠"唯一可编辑节点"猜，
+     * 必须回到用户刚才点的那个框。
+     */
+    private var lastTapFraction: Pair<Float, Float>? = null
 
     private val _paused = MutableStateFlow(false)
 
@@ -220,6 +258,7 @@ class TakeoverViewModel @Inject constructor(
         if (_preview.value == null) return
         // 接管档要的是实时画面与触控：回放和暂停都必须先退出，否则用户点的和看到的不一致
         exitReplay()
+        _writeResult.value = null
         _takeover.value = true
     }
 
@@ -337,9 +376,66 @@ class TakeoverViewModel @Inject constructor(
     fun forwardTap(xFraction: Float, yFraction: Float) {
         val handle = injectionHandle() ?: return
         val point = toNative(handle, xFraction, yFraction)
+        // 记住这一次的落点：本地输入框要把文本写回"用户刚点的那个框"
+        lastTapFraction = xFraction.coerceIn(0f, 1f) to yFraction.coerceIn(0f, 1f)
         viewModelScope.launch {
             injectionLock.withLock {
                 runCatching { transport.inputs.tap(handle, point, TAKEOVER_PRESS_MS) }
+            }
+        }
+    }
+
+    /**
+     * 功能：更新本地输入框的正文
+     * 参数：value 新文本
+     * 返回：无
+     */
+    fun onLocalTextChange(value: String) {
+        _localText.value = value.take(LOCAL_INPUT_MAX)
+        if (_writeResult.value != null) _writeResult.value = null
+    }
+
+    /**
+     * 功能：把本地输入框的内容写入副屏
+     * 参数：无
+     * 返回：无（结果写入 [writeResult]）
+     *
+     * 输入法不参与：文字在主屏打完，经无障碍 SET_TEXT 直接写给副屏的焦点控件；
+     * 写不进去时按 TextInput 的既有顺序退到粘贴与按键。内容不落库、不打日志。
+     */
+    fun writeLocalText() {
+        val text = _localText.value.trim()
+        if (text.isEmpty() || _writing.value) return
+        val handle = injectionHandle()
+        if (handle == null) {
+            _writeResult.value = LocalWriteResult("没有可写的副屏：任务已恢复或屏已释放", false)
+            return
+        }
+        val target = lastTapFraction
+        if (target == null) {
+            _writeResult.value = LocalWriteResult("先在预览里点一下目标输入框，再写入", false)
+            return
+        }
+
+        viewModelScope.launch {
+            _writing.value = true
+            val accepted = runCatching {
+                val action = AgentAction.Do(
+                    kind = ActionKind.TEXT,
+                    observationId = "manual-${SystemClock.elapsedRealtime()}",
+                    targetFingerprint = null,
+                    normX = (target.first * LOCAL_NORM_SCALE).toInt(),
+                    normY = (target.second * LOCAL_NORM_SCALE).toInt(),
+                    text = text,
+                )
+                textInput.type(handle, action)
+            }.getOrDefault(false)
+            _writing.value = false
+            _writeResult.value = if (accepted) {
+                _localText.value = ""
+                LocalWriteResult("已写入副屏，确认无误后自己点「验证 / 提交」", true)
+            } else {
+                LocalWriteResult("写入被拒绝：先点一下目标输入框再试，或在主屏打开该 App 手动输入", false)
             }
         }
     }
@@ -470,5 +566,11 @@ class TakeoverViewModel @Inject constructor(
 
         /** 一次滑动最多注入的轨迹点数。 */
         const val MAX_SWIPE_POINTS = 16
+
+        /** 本地输入框的字数上限：验证码、搜索词、消息都用不到更长。 */
+        const val LOCAL_INPUT_MAX = 120
+
+        /** 归一化坐标的满量程；与动作协议里的 point 语义一致。 */
+        const val LOCAL_NORM_SCALE = 1000
     }
 }

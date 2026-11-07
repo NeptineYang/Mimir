@@ -53,6 +53,42 @@ class AuditScreenshotStore @Inject constructor(
     }
 
     /**
+     * 功能：按缩略图尺寸读取一帧审计截图
+     * 参数：path 截图绝对路径；maxWidth 期望的最大宽度（像素）
+     * 返回：解码后的位图；路径为空、文件不在或解码失败时为 null
+     *
+     * 任务卡里只显示几十 dp 的画面，按原图解码（720×1600）会白占几 MB；
+     * 先读边界算 inSampleSize，再按上限二次收缩。
+     */
+    suspend fun loadThumb(path: String?, maxWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
+        if (path.isNullOrEmpty()) return@withContext null
+        runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            if (bounds.outWidth <= 0) return@withContext null
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= maxWidth) sample *= 2
+
+            val bitmap = BitmapFactory.decodeFile(
+                path,
+                BitmapFactory.Options().apply { inSampleSize = sample },
+            ) ?: return@withContext null
+            if (bitmap.width <= maxWidth) {
+                bitmap
+            } else {
+                val scaled = Bitmap.createScaledBitmap(
+                    bitmap,
+                    maxWidth,
+                    (bitmap.height * maxWidth / bitmap.width).coerceAtLeast(1),
+                    true,
+                )
+                bitmap.recycle()
+                scaled
+            }
+        }.getOrNull()
+    }
+
+    /**
      * 功能：删除某任务的全部审计截图
      * 参数：taskId 任务标识
      * 返回：无

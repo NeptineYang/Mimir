@@ -19,6 +19,8 @@ sealed interface AgentAction {
      * @property normY 纯视觉模式的相对纵坐标（0–1000）
      * @property text 文本动作的正文；凭据动作里是 credential_id（不是密码本体）
      * @property swipePath 滑动轨迹（原生像素）；非滑动动作为空
+     * @property stepDone 本动作同时完成了当前计划步骤（"边做边声明"）
+     * @property stepSummary 步骤完成说明；与 [stepDone] 一起使用时写进审计
      */
     data class Do(
         val kind: ActionKind,
@@ -29,6 +31,8 @@ sealed interface AgentAction {
         val normY: Int? = null,
         val text: String? = null,
         val swipePath: List<Point> = emptyList(),
+        val stepDone: Boolean = false,
+        val stepSummary: String? = null,
     ) : AgentAction
 
     /**
