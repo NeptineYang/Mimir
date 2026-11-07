@@ -24,7 +24,7 @@ jobs:
       - name: Install Android SDK components
         run: |
           yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools"
+          sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 
       - name: Download speech recognition assets
         run: python3 scripts/fetch-asr-assets.py
