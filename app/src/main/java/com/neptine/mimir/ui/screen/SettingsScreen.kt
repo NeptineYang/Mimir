@@ -1,10 +1,14 @@
 package com.neptine.mimir.ui.screen
 
+import com.neptine.mimir.ui.i18n.LanguagePrefs
+import com.neptine.mimir.ui.i18n.UiLanguage
+import com.neptine.mimir.ui.i18n.UiLanguageState
+import com.neptine.mimir.ui.i18n.t
 import android.Manifest
+import android.content.Context
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,12 +33,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.neptine.mimir.ui.component.EmptyState
+import com.neptine.mimir.ui.component.ExpandableSection
 import com.neptine.mimir.ui.component.KeyValueRow
+import com.neptine.mimir.ui.component.MimirHairline
 import com.neptine.mimir.ui.component.MimirListRow
 import com.neptine.mimir.ui.component.MimirPageHeader
 import com.neptine.mimir.ui.component.MonoLabel
@@ -55,11 +63,7 @@ import com.neptine.mimir.ui.viewmodel.formatTime
  * 返回：无
  */
 @Composable
-fun SettingsScreen(
-    onOpenMemory: () -> Unit,
-    onOpenCredentials: () -> Unit,
-    onOpenScheduled: () -> Unit,
-) {
+fun SettingsScreen() {
     val viewModel: SettingsViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = LocalMimirColors.current
@@ -74,19 +78,24 @@ fun SettingsScreen(
         viewModel.refreshAppMatrix()
     }
 
+    // 语言切换后重算权限与能力矩阵里的派生文案，避免页面上残留旧语言
+    LaunchedEffect(UiLanguageState.current) {
+        viewModel.refreshPermissions()
+        viewModel.refreshAppMatrix()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.canvas)
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = MimirSpacing.page),
     ) {
         MimirPageHeader(
-            eyebrow = "MIMIR / 04",
-            title = "设置",
-            subtitle = "权限、模型与设备能力",
+            title = "设置".t(),
         )
+
+        LanguageSection()
 
         val onOpenNotifications = {
             if (Build.VERSION.SDK_INT >= 33 && state.notifications != PermissionStatus.GRANTED) {
@@ -125,30 +134,6 @@ fun SettingsScreen(
 
         AsrSection(state = state, onTest = viewModel::testAsr)
 
-        SectionBlock(
-            title = "记忆与凭据",
-            modifier = Modifier.padding(top = MimirSpacing.md),
-        ) {
-            MimirListRow(
-                title = "配方与策略",
-                meta = "白盒编辑",
-                note = "配方记录「入口在哪、步骤怎么走」，只在使用前自证有效；可停用、删除、导出/导入 JSON。",
-                onClick = onOpenMemory,
-            )
-            MimirListRow(
-                title = "登录凭据",
-                meta = "Keystore 加密",
-                note = "只保存普通登录账号；模型只看得到凭据编号，正文由本地在当次授权后填充。",
-                onClick = onOpenCredentials,
-            )
-            MimirListRow(
-                title = "定时任务",
-                meta = "到点自动执行",
-                note = "按设定时间自动跑任务；会点亮屏幕但保持锁屏，任务内容不显示在锁屏上。",
-                onClick = onOpenScheduled,
-            )
-        }
-
         CapabilitySection(
             capabilities = state.capabilities,
             probing = state.probing,
@@ -179,39 +164,97 @@ private fun PermissionSection(
     onOpenNotifications: () -> Unit,
     onOpenResultBanner: () -> Unit,
 ) {
-    SectionBlock(
-        title = "权限",
-        modifier = Modifier.padding(top = MimirSpacing.md),
-    ) {
+    val ready = listOf(state.shizuku, state.accessibility, state.notifications, state.resultBanner)
+        .count { it == PermissionStatus.GRANTED }
+    ExpandableSection(title = "权限".t(), summary = "%1\$d / 4 已就绪".t(ready)) {
         PermissionRow(
             name = "Shizuku",
             status = state.shizuku,
-            detail = "拿 shell uid 执行系统级操作；重启手机后服务不会自动拉起，需要重新启动 Shizuku。",
-            actionLabel = if (state.shizuku == PermissionStatus.GRANTED) null else "去授权",
+            detail = "拿 shell uid 执行系统级操作；重启手机后服务不会自动拉起，需要重新启动 Shizuku。".t(),
+            actionLabel = if (state.shizuku == PermissionStatus.GRANTED) null else "去授权".t(),
             onAction = onRequestShizuku,
         )
         PermissionRow(
-            name = "无障碍服务",
+            name = "无障碍服务".t(),
             status = state.accessibility,
-            detail = "只读取副屏上目标 App 的控件文本，不读你主屏的内容。",
-            actionLabel = if (state.accessibility == PermissionStatus.GRANTED) null else "去开启",
+            detail = "只读取副屏上目标 App 的控件文本，不读你主屏的内容。".t(),
+            actionLabel = if (state.accessibility == PermissionStatus.GRANTED) null else "去开启".t(),
             onAction = onOpenAccessibility,
         )
         PermissionRow(
-            name = "通知",
+            name = "通知".t(),
             status = state.notifications,
-            detail = "人工交接与完成报告的唯一通道；会以横幅弹出提醒。",
-            actionLabel = if (state.notifications == PermissionStatus.GRANTED) null else "去设置",
+            detail = "人工交接与完成报告的唯一通道；会以横幅弹出提醒。".t(),
+            actionLabel = if (state.notifications == PermissionStatus.GRANTED) null else "去设置".t(),
             onAction = onOpenNotifications,
         )
         PermissionRow(
-            name = "完成提醒",
+            name = "完成提醒".t(),
             status = state.resultBanner,
-            detail = "任务结束时把通知横幅弹到主屏（含锁屏）；需要系统里开启「任务结果」渠道的悬浮通知。",
-            actionLabel = if (state.resultBanner == PermissionStatus.GRANTED) null else "去开启",
+            detail = "任务结束时把通知横幅弹到主屏（含锁屏）；需要系统里开启「任务结果」渠道的悬浮通知。".t(),
+            actionLabel = if (state.resultBanner == PermissionStatus.GRANTED) null else "去开启".t(),
             onAction = onOpenResultBanner,
         )
     }
+}
+
+/**
+ * 功能：渲染界面语言切换（中文 / English）
+ * 参数：无
+ * 返回：无
+ *
+ * 放在设置页第一组，且不参与折叠：语言本身是"看得懂才找得到"的前提，
+ * 藏进手风琴会让英文用户先面对一屏中文再去找开关。
+ *
+ * 两个选项都是独立胶囊按钮，选中的用实心填充——与全站按钮语义一致。
+ */
+@Composable
+private fun LanguageSection() {
+    val colors = LocalMimirColors.current
+    val context = LocalContext.current
+    val language = UiLanguageState.current
+
+    Column {
+        MimirHairline()
+        Column(
+            modifier = Modifier.padding(top = MimirSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(MimirSpacing.xxs),
+        ) {
+            Text(
+                text = "界面语言".t(),
+                style = MaterialTheme.typography.titleMedium,
+                color = colors.ink,
+            )
+            Text(
+                text = "切换后立即生效，只影响界面文案".t(),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.muted,
+            )
+        }
+        Row(
+            modifier = Modifier.padding(top = MimirSpacing.md, bottom = MimirSpacing.lg),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextActionButton(
+                text = "中文",
+                onClick = { selectLanguage(context, UiLanguage.ZH) },
+                emphasis = language == UiLanguage.ZH,
+            )
+            TextActionButton(
+                text = "English",
+                onClick = { selectLanguage(context, UiLanguage.EN) },
+                emphasis = language == UiLanguage.EN,
+            )
+        }
+    }
+}
+
+/** 功能：写入语言选择；参数：context 上下文、language 目标语言；返回：无。 */
+private fun selectLanguage(context: Context, language: UiLanguage) {
+    if (UiLanguageState.current == language) return
+    UiLanguageState.current = language
+    LanguagePrefs.write(context, language)
 }
 
 /**
@@ -279,47 +322,54 @@ private fun ModelSection(
     onSave: (String, String, String, String, String) -> Unit,
     onTest: () -> Unit,
 ) {
-    SectionBlock(
-        title = "模型后端",
-        modifier = Modifier.padding(top = MimirSpacing.xxl),
-        trailing = {
-            Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md)) {
-                TextActionButton(
-                    text = if (state.modelTesting) "测试中" else "测试",
-                    onClick = onTest,
-                    enabled = state.modelLoaded && !state.modelTesting && state.hasApiKey,
-                )
-                TextActionButton(
-                    text = "编辑",
-                    onClick = onEdit,
-                    enabled = state.modelLoaded && !state.modelEditing,
-                )
-            }
-        },
-    ) {
-        val model = state.model
+    val configured = state.model
+    val summary = when {
+        !state.modelLoaded -> "读取中".t()
+        configured == null -> "尚未配置".t()
+        else -> "${configured.baseUrl} · ${configured.executorModel}"
+    }
+    ExpandableSection(title = "模型后端".t(), summary = summary) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = MimirSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextActionButton(
+                text = if (state.modelTesting) "测试中".t() else "测试".t(),
+                onClick = onTest,
+                enabled = state.modelLoaded && !state.modelTesting && state.hasApiKey,
+            )
+            TextActionButton(
+                text = "编辑".t(),
+                onClick = onEdit,
+                enabled = state.modelLoaded && !state.modelEditing,
+                emphasis = true,
+            )
+        }
         when {
             !state.modelLoaded -> Spacer(modifier = Modifier.height(MimirSpacing.md))
-            model == null -> EmptyState(
-                title = "尚未配置模型后端",
-                hint = "点右上角编辑，填 base_url、模型名与 API Key。密钥存 EncryptedSharedPreferences，" +
-                    "表里只留别名，不上传、不进日志。",
+            configured == null -> EmptyState(
+                title = "尚未配置模型后端".t(),
+                hint = "点上方编辑，填 base_url、模型名与 API Key。密钥存 EncryptedSharedPreferences，".t() +
+                    "表里只留别名，不上传、不进日志。".t(),
             )
             else -> {
-                KeyValueRow(key = "base_url", value = model.baseUrl, mono = true)
-                KeyValueRow(key = "planner", value = model.plannerModel, mono = true)
-                KeyValueRow(key = "executor", value = model.executorModel, mono = true)
-                KeyValueRow(key = "reviewer", value = model.reviewerModel, mono = true)
+                KeyValueRow(key = "base_url", value = configured.baseUrl, mono = true)
+                KeyValueRow(key = "planner", value = configured.plannerModel, mono = true)
+                KeyValueRow(key = "executor", value = configured.executorModel, mono = true)
+                KeyValueRow(key = "reviewer", value = configured.reviewerModel, mono = true)
                 KeyValueRow(
-                    key = "密钥",
-                    value = if (state.hasApiKey) "已保存（加密存储）" else "未保存",
+                    key = "密钥".t(),
+                    value = if (state.hasApiKey) "已保存（加密存储）".t() else "未保存".t(),
                     mono = true,
                 )
                 state.modelTestResult?.let { result ->
                     Text(
                         text = result,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (result.startsWith("连通正常")) {
+                        color = if (result.startsWith("连通正常") || result.startsWith("Connection OK")) {
                             LocalMimirColors.current.deepGreen
                         } else {
                             LocalMimirColors.current.coral
@@ -353,19 +403,21 @@ private fun AsrSection(
     state: SettingsUiState,
     onTest: () -> Unit,
 ) {
-    SectionBlock(
-        title = "语音识别",
-        modifier = Modifier.padding(top = MimirSpacing.xxl),
-        trailing = {
+    ExpandableSection(title = "语音识别".t(), summary = "sherpa-onnx · 端侧流式 · 中文".t()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = MimirSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm, Alignment.End),
+        ) {
             TextActionButton(
-                text = if (state.asrTesting) "自检中" else "自检",
+                text = if (state.asrTesting) "自检中".t() else "自检".t(),
                 onClick = onTest,
                 enabled = !state.asrTesting,
             )
-        },
-    ) {
-        KeyValueRow(key = "引擎", value = "sherpa-onnx 2.0.1 · 端侧流式", mono = true)
-        KeyValueRow(key = "模型", value = "zipformer multi-zh-hans · int8", mono = true)
+        }
+        KeyValueRow(key = "引擎".t(), value = "sherpa-onnx 2.0.1 · 端侧流式".t(), mono = true)
+        KeyValueRow(key = "模型".t(), value = "zipformer multi-zh-hans · int8", mono = true)
         state.asrResult?.let { result ->
             Text(
                 text = result,
@@ -401,7 +453,7 @@ private fun ModelEditDialog(
 
     AlertDialog(
         onDismissRequest = { if (!state.modelSaving) onDismiss() },
-        title = { Text(text = "模型后端", style = MaterialTheme.typography.titleMedium) },
+        title = { Text(text = "模型后端".t(), style = MaterialTheme.typography.titleMedium) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(MimirSpacing.sm)) {
                 OutlinedTextField(
@@ -414,25 +466,25 @@ private fun ModelEditDialog(
                 OutlinedTextField(
                     value = executorModel,
                     onValueChange = { executorModel = it },
-                    label = { Text("executor 模型") },
+                    label = { Text("executor 模型".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = planner,
                     onValueChange = { planner = it },
-                    label = { Text("planner 模型（留空沿用 executor）") },
+                    label = { Text("planner 模型（留空沿用 executor）".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = reviewer,
                     onValueChange = { reviewer = it },
-                    label = { Text("reviewer 模型（留空沿用 executor）") },
+                    label = { Text("reviewer 模型（留空沿用 executor）".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
-                    label = { Text(if (state.hasApiKey) "API Key（留空则不修改）" else "API Key") },
+                    label = { Text(if (state.hasApiKey) "API Key（留空则不修改）".t() else "API Key") },
                     singleLine = true,
                 )
                 if (state.modelError != null) {
@@ -446,14 +498,15 @@ private fun ModelEditDialog(
         },
         confirmButton = {
             TextActionButton(
-                text = if (state.modelSaving) "保存中" else "保存",
+                text = if (state.modelSaving) "保存中".t() else "保存".t(),
                 onClick = { onSave(baseUrl, planner, executorModel, reviewer, apiKey) },
                 enabled = !state.modelSaving,
+                emphasis = true,
             )
         },
         dismissButton = {
             TextActionButton(
-                text = "取消",
+                text = "取消".t(),
                 onClick = onDismiss,
                 enabled = !state.modelSaving,
                 color = LocalMimirColors.current.muted,
@@ -474,32 +527,39 @@ private fun CapabilitySection(
     onRunProbe: () -> Unit,
 ) {
     val colors = LocalMimirColors.current
-    SectionBlock(
-        title = "设备能力 P1–P5",
-        modifier = Modifier.padding(top = MimirSpacing.xxl),
-        trailing = {
+    val summary = if (capabilities.isEmpty()) {
+        "尚未检测（P1–P5）".t()
+    } else {
+        "${capabilities.count { it.passed }} / ${capabilities.size} 通过"
+    }
+    ExpandableSection(title = "设备能力 P1–P5".t(), summary = summary) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = MimirSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm, Alignment.End),
+        ) {
             TextActionButton(
-                text = if (probing) "检测中" else "重新检测",
+                text = if (probing) "检测中".t() else "重新检测".t(),
                 onClick = onRunProbe,
                 enabled = !probing,
             )
-        },
-    ) {
+        }
         if (capabilities.isEmpty()) {
             EmptyState(
-                title = "尚未运行设备探针",
-                hint = "P1 虚拟屏 / P2 定向注入 / P3 定向取帧 / P4 无障碍可见性 / P5 零干扰输入。" +
-                    "点右上角重新检测，逐项结果会写进本机数据库。",
+                title = "尚未运行设备探针".t(),
+                hint = "P1 虚拟屏 / P2 定向注入 / P3 定向取帧 / P4 无障碍可见性 / P5 零干扰输入。".t() +
+                    "点上方重新检测，逐项结果会写进本机数据库。".t(),
             )
             Text(
-                text = "P5 需要人工配合：主屏持续打字时观察副屏输入是否抢焦点。",
+                text = "P5 需要人工配合：主屏持续打字时观察副屏输入是否抢焦点。".t(),
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.muted,
             )
         } else {
             capabilities.forEach { capability ->
                 MimirListRow(
-                    title = if (capability.passed) "通过" else "不支持",
+                    title = if (capability.passed) "通过".t() else "不支持".t(),
                     leading = { MonoLabel(text = capability.probeId, color = colors.ink) },
                     note = capability.detail,
                     meta = "${capability.deviceModel} · ${formatTime(capability.checkedAt)}",
@@ -534,53 +594,49 @@ private fun OnboardingSection(
         modelReady
 
     SectionBlock(
-        title = "开始使用",
+        title = "开始使用".t(),
         modifier = Modifier.padding(top = MimirSpacing.md),
-        trailing = { MonoLabel(text = "首次配置", color = colors.muted) },
+        trailing = { MonoLabel(text = "首次配置".t(), color = colors.muted) },
     ) {
         Text(
-            text = "四步就绪之后，任务才能建屏、读屏并把结果回报给你。",
+            text = "四步就绪之后，任务才能建屏、读屏并把结果回报给你。".t(),
             style = MaterialTheme.typography.bodyMedium,
             color = colors.slate,
             modifier = Modifier.padding(bottom = MimirSpacing.sm),
         )
         GuideStepRow(
-            index = "01",
-            title = "授权 Shizuku",
+            title = "授权 Shizuku".t(),
             ready = state.shizuku == PermissionStatus.GRANTED,
-            actionLabel = "去授权",
+            actionLabel = "去授权".t(),
             onAction = onRequestShizuku,
         )
         GuideStepRow(
-            index = "02",
-            title = "开启无障碍服务",
+            title = "开启无障碍服务".t(),
             ready = state.accessibility == PermissionStatus.GRANTED,
-            actionLabel = "去开启",
+            actionLabel = "去开启".t(),
             onAction = onOpenAccessibility,
         )
         GuideStepRow(
-            index = "03",
-            title = "允许通知",
+            title = "允许通知".t(),
             ready = state.notifications == PermissionStatus.GRANTED,
-            actionLabel = "去设置",
+            actionLabel = "去设置".t(),
             onAction = onOpenNotifications,
         )
         GuideStepRow(
-            index = "04",
-            title = "配置模型后端",
+            title = "配置模型后端".t(),
             ready = modelReady,
-            actionLabel = "去配置",
+            actionLabel = "去配置".t(),
             onAction = onEditModel,
         )
         TextActionButton(
-            text = if (allReady) "完成引导" else "跳过（不再显示）",
+            text = if (allReady) "完成引导".t() else "跳过（不再显示）".t(),
             onClick = onDone,
             emphasis = allReady,
             modifier = Modifier.padding(top = MimirSpacing.sm),
         )
         if (!allReady) {
             Text(
-                text = "跳过只是隐藏这张引导，不会替你完成配置。",
+                text = "跳过只是隐藏这张引导，不会替你完成配置。".t(),
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.muted,
                 modifier = Modifier.padding(top = MimirSpacing.xs, bottom = MimirSpacing.md),
@@ -591,13 +647,14 @@ private fun OnboardingSection(
 
 /**
  * 功能：渲染引导里的一步
- * 参数：index 步骤序号；title 步骤名；ready 是否已就绪；actionLabel 未就绪时的操作文案；
- *       onAction 操作回调
+ * 参数：title 步骤名；ready 是否已就绪；actionLabel 未就绪时的操作文案；onAction 操作回调
  * 返回：无
+ *
+ * 不显示 01/02/03/04：这四步是并列的配置项，先后顺序并不严格，
+ * 序号只会让人以为必须按顺序完成。
  */
 @Composable
 private fun GuideStepRow(
-    index: String,
     title: String,
     ready: Boolean,
     actionLabel: String,
@@ -610,16 +667,13 @@ private fun GuideStepRow(
             .padding(vertical = MimirSpacing.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        MonoLabel(text = index, color = colors.ink)
         Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = MimirSpacing.md),
+            modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(MimirSpacing.xs),
         ) {
             Text(text = title, style = MaterialTheme.typography.bodyLarge, color = colors.ink)
             Text(
-                text = if (ready) "已完成" else "未完成",
+                text = if (ready) "已完成".t() else "未完成".t(),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (ready) colors.deepGreen else colors.slate,
             )
@@ -651,17 +705,20 @@ private fun AppMatrixSection(
         state.model != null &&
         state.hasApiKey
 
-    SectionBlock(
-        title = "按 App 能力",
-        modifier = Modifier.padding(top = MimirSpacing.xxl),
-        trailing = {
+    ExpandableSection(
+        title = "按 App 能力".t(),
+        summary = "可启动 %1\$d 个 · 有记录 %2\$d 个".t(state.launchableCount, state.appMatrix.size),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm, Alignment.End),
+        ) {
             TextActionButton(
-                text = if (state.appMatrixLoading) "刷新中" else "刷新",
+                text = if (state.appMatrixLoading) "刷新中".t() else "刷新".t(),
                 onClick = onRefresh,
                 enabled = !state.appMatrixLoading,
             )
-        },
-    ) {
+        }
         Text(
             text = "可启动应用 ${state.launchableCount} 个；下表只列有任务或配方记录的 App。",
             style = MaterialTheme.typography.bodySmall,
@@ -670,8 +727,8 @@ private fun AppMatrixSection(
         )
         if (state.appMatrix.isEmpty()) {
             EmptyState(
-                title = "暂无可评估的 App",
-                hint = "跑一个任务或新建一条配方后，这里会按 App 汇总任务数、配方数与可执行状态。",
+                title = "暂无可评估的 App".t(),
+                hint = "跑一个任务或新建一条配方后，这里会按 App 汇总任务数、配方数与可执行状态。".t(),
             )
         } else {
             state.appMatrix.forEach { item ->
@@ -694,17 +751,17 @@ private fun AppMatrixRow(
 ) {
     val colors = LocalMimirColors.current
     val capability = when {
-        !launchabilityKnown -> "未知"
-        !item.launchable -> "不可用"
-        readyNow -> "可执行"
-        else -> "待权限"
+        !launchabilityKnown -> "未知".t()
+        !item.launchable -> "不可用".t()
+        readyNow -> "可执行".t()
+        else -> "待权限".t()
     }
     val color = when (capability) {
-        "可执行" -> colors.deepGreen
-        "不可用" -> colors.coral
+        "可执行".t() -> colors.deepGreen
+        "不可用".t() -> colors.coral
         else -> colors.slate
     }
-    val recent = if (item.lastUsedAt > 0) formatTime(item.lastUsedAt) else "未使用"
+    val recent = if (item.lastUsedAt > 0) formatTime(item.lastUsedAt) else "未使用".t()
     MimirListRow(
         title = item.label,
         meta = item.packageName,
@@ -719,10 +776,11 @@ private fun AppMatrixRow(
  * 参数：无（扩展函数）
  * 返回：展示用短标签
  */
+@Composable
 private fun PermissionStatus.label(): String = when (this) {
-    PermissionStatus.GRANTED -> "已就绪"
-    PermissionStatus.DENIED -> "未授权"
-    PermissionStatus.UNAVAILABLE -> "未运行"
+    PermissionStatus.GRANTED -> "已就绪".t()
+    PermissionStatus.DENIED -> "未授权".t()
+    PermissionStatus.UNAVAILABLE -> "未运行".t()
 }
 
 /**

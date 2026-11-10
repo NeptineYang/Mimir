@@ -9,7 +9,9 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.neptine.mimir.ui.screen.AuditEventScreen
 import com.neptine.mimir.ui.screen.AuditScreen
+import com.neptine.mimir.ui.screen.AuditTaskScreen
 import com.neptine.mimir.ui.screen.CredentialScreen
 import com.neptine.mimir.ui.screen.MemoryScreen
 import com.neptine.mimir.ui.screen.ScheduledTaskScreen
@@ -28,34 +30,47 @@ const val ROUTE_HISTORY = "history"
 /** 配置页：权限、模型与设备能力。 */
 const val ROUTE_SETTINGS = "settings"
 
-/** 记忆页：配方与策略的白盒编辑，全屏展示、不挂底栏。 */
+/** 记忆页：配方与策略的白盒编辑，侧边栏一级模块。 */
 const val ROUTE_MEMORY = "memory"
 
-/** 凭据页：普通登录密码的加密存储，全屏展示、不挂底栏。 */
+/** 凭据页：普通登录密码的加密存储，侧边栏一级模块。 */
 const val ROUTE_CREDENTIALS = "credentials"
 
 /** 定时任务页：设定时间让 Agent 自动执行，全屏展示、不挂底栏。 */
 const val ROUTE_SCHEDULED = "scheduled"
 
-/** 路由参数名：任务标识。审计页与接管页共用。 */
+/** 路由参数名：任务标识。审计回放与接管页共用。 */
 const val ARG_TASK_ID = "taskId"
 
-/** 审计页的注册路由（带可选参数）。 */
-const val ROUTE_AUDIT = "audit?$ARG_TASK_ID={$ARG_TASK_ID}"
+/** 路由参数名：审计事件主键。 */
+const val ARG_EVENT_ID = "eventId"
 
-/** 审计页不带参数时的入口串；底栏跳转用它。 */
-const val ROUTE_AUDIT_ENTRY = "audit"
+/** 审计首页：高危操作事件流。 */
+const val ROUTE_AUDIT = "audit"
+
+/** 审计事件详情：单条事件的证据。 */
+const val ROUTE_AUDIT_EVENT = "audit/event/{$ARG_EVENT_ID}"
+
+/** 按任务回放：完整时间轴（带可选任务参数）。 */
+const val ROUTE_AUDIT_TASK = "audit/task?$ARG_TASK_ID={$ARG_TASK_ID}"
 
 /** 接管页的注册路由（带可选参数），全屏展示、不挂底栏。 */
 const val ROUTE_TAKEOVER = "takeover?$ARG_TASK_ID={$ARG_TASK_ID}"
 
 /**
- * 功能：拼出审计页的导航目标串
+ * 功能：拼出审计事件详情的导航目标串
+ * 参数：eventId 审计行主键
+ * 返回：可直接交给 NavController 的路由串
+ */
+fun routeAuditEvent(eventId: Long): String = "audit/event/$eventId"
+
+/**
+ * 功能：拼出"按任务回放"的导航目标串
  * 参数：taskId 任务标识；为空表示进入"选择任务"态
  * 返回：可直接交给 NavController 的路由串
  */
-fun routeAudit(taskId: String? = null): String =
-    if (taskId == null) ROUTE_AUDIT_ENTRY else "$ROUTE_AUDIT_ENTRY?$ARG_TASK_ID=$taskId"
+fun routeAuditTask(taskId: String? = null): String =
+    if (taskId == null) "audit/task" else "audit/task?$ARG_TASK_ID=$taskId"
 
 /**
  * 功能：拼出接管页的导航目标串
@@ -94,33 +109,44 @@ fun MimirNavHost(
         composable(ROUTE_HISTORY) {
             HistoryScreen(
                 onCreateTask = { navController.navigateToTab(MimirTab.TASK) },
-                onOpenAudit = { taskId -> navController.navigate(routeAudit(taskId)) },
+                onOpenAudit = { taskId -> navController.navigate(routeAuditTask(taskId)) },
+            )
+        }
+        composable(ROUTE_AUDIT) {
+            AuditScreen(
+                onOpenEvent = { eventId -> navController.navigate(routeAuditEvent(eventId)) },
+                onOpenTaskReplay = { navController.navigate(routeAuditTask()) },
             )
         }
         composable(
-            route = ROUTE_AUDIT,
+            route = ROUTE_AUDIT_EVENT,
+            arguments = listOf(eventIdArgument()),
+        ) {
+            AuditEventScreen(
+                onBack = { navController.popBackStack() },
+                onOpenTask = { taskId -> navController.navigate(routeAuditTask(taskId)) },
+            )
+        }
+        composable(
+            route = ROUTE_AUDIT_TASK,
             arguments = listOf(taskIdArgument()),
         ) {
-            AuditScreen(
+            AuditTaskScreen(
                 onBack = { navController.popBackStack() },
-                onSelectTask = { taskId -> navController.navigate(routeAudit(taskId)) },
+                onSelectTask = { taskId -> navController.navigate(routeAuditTask(taskId)) },
             )
         }
         composable(ROUTE_SETTINGS) {
-            SettingsScreen(
-                onOpenMemory = { navController.navigate(ROUTE_MEMORY) },
-                onOpenCredentials = { navController.navigate(ROUTE_CREDENTIALS) },
-                onOpenScheduled = { navController.navigate(ROUTE_SCHEDULED) },
-            )
+            SettingsScreen()
         }
         composable(ROUTE_MEMORY) {
-            MemoryScreen(onBack = { navController.popBackStack() })
+            MemoryScreen()
         }
         composable(ROUTE_CREDENTIALS) {
-            CredentialScreen(onBack = { navController.popBackStack() })
+            CredentialScreen()
         }
         composable(ROUTE_SCHEDULED) {
-            ScheduledTaskScreen(onBack = { navController.popBackStack() })
+            ScheduledTaskScreen()
         }
         composable(
             route = ROUTE_TAKEOVER,
@@ -140,4 +166,13 @@ private fun taskIdArgument() = navArgument(ARG_TASK_ID) {
     type = NavType.StringType
     nullable = true
     defaultValue = null
+}
+
+/**
+ * 功能：构造审计事件主键路由参数
+ * 参数：无
+ * 返回：Long 型、必填的导航参数声明
+ */
+private fun eventIdArgument() = navArgument(ARG_EVENT_ID) {
+    type = NavType.LongType
 }

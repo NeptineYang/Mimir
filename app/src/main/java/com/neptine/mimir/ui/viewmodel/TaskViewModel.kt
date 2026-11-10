@@ -3,6 +3,7 @@ package com.neptine.mimir.ui.viewmodel
 import android.content.Context
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
+import com.neptine.mimir.ui.i18n.tStatic
 import androidx.lifecycle.viewModelScope
 import com.neptine.mimir.agent.Orchestrator
 import com.neptine.mimir.agent.TaskLauncher
@@ -96,7 +97,7 @@ class TaskViewModel @Inject constructor(
     /** 输入框文本。 */
     val input: StateFlow<String> = _input.asStateFlow()
 
-    private val _status = MutableStateFlow(EngineStatus(online = false, detail = "正在检查运行条件"))
+    private val _status = MutableStateFlow(EngineStatus(online = false, detail = "正在检查运行条件".tStatic()))
 
     /** 引擎状态；进入页面时刷新一次，避免设置页改完回来还显示旧结论。 */
     val status: StateFlow<EngineStatus> = _status.asStateFlow()
@@ -138,17 +139,17 @@ class TaskViewModel @Inject constructor(
                 val permission = permissions.snapshot()
                 when {
                     permission.shizuku == PermissionStatus.DENIED ->
-                        EngineStatus(false, "Shizuku 未授权，点这里授权", EngineFix.SHIZUKU_PERMISSION)
+                        EngineStatus(false, "Shizuku 未授权，点这里授权".tStatic(), EngineFix.SHIZUKU_PERMISSION)
                     permission.shizuku == PermissionStatus.UNAVAILABLE ->
-                        EngineStatus(false, "Shizuku 服务未运行，点这里去启动", EngineFix.SHIZUKU_SERVICE)
+                        EngineStatus(false, "Shizuku 服务未运行，点这里去启动".tStatic(), EngineFix.SHIZUKU_SERVICE)
                     permission.accessibility != PermissionStatus.GRANTED ->
-                        EngineStatus(false, "无障碍服务未开启，点这里去开启", EngineFix.ACCESSIBILITY)
+                        EngineStatus(false, "无障碍服务未开启，点这里去开启".tStatic(), EngineFix.ACCESSIBILITY)
                     else -> {
                         val model = models.resolve(ModelConfigRepository.ModelRole.EXECUTOR)
                         if (model == null) {
-                            EngineStatus(false, "未配置模型后端，点这里去填写", EngineFix.MODEL)
+                            EngineStatus(false, "未配置模型后端，点这里去填写".tStatic(), EngineFix.MODEL)
                         } else {
-                            EngineStatus(true, "已就绪：${model.model}")
+                            EngineStatus(true, "已就绪：%1\$s".tStatic(model.model))
                         }
                     }
                 }

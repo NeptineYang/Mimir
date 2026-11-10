@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.viewmodel
 
+import com.neptine.mimir.ui.i18n.tStatic
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -98,7 +99,7 @@ class TakeoverViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     }
 
-    /** 最近一步审计；接管页用它回答"agent 停在哪一步、为什么停"。 */
+    /** 最近一步审计；接管页用它回答"agent 停在哪一步、为什么停".tStatic()。 */
     val lastStep: StateFlow<AuditRow?> = if (taskId == null) {
         MutableStateFlow(null)
     } else {
@@ -408,12 +409,12 @@ class TakeoverViewModel @Inject constructor(
         if (text.isEmpty() || _writing.value) return
         val handle = injectionHandle()
         if (handle == null) {
-            _writeResult.value = LocalWriteResult("没有可写的副屏：任务已恢复或屏已释放", false)
+            _writeResult.value = LocalWriteResult("没有可写的副屏：任务已恢复或屏已释放".tStatic(), false)
             return
         }
         val target = lastTapFraction
         if (target == null) {
-            _writeResult.value = LocalWriteResult("先在预览里点一下目标输入框，再写入", false)
+            _writeResult.value = LocalWriteResult("先在预览里点一下目标输入框，再写入".tStatic(), false)
             return
         }
 
@@ -433,9 +434,9 @@ class TakeoverViewModel @Inject constructor(
             _writing.value = false
             _writeResult.value = if (accepted) {
                 _localText.value = ""
-                LocalWriteResult("已写入副屏，确认无误后自己点「验证 / 提交」", true)
+                LocalWriteResult("已写入副屏，确认无误后自己点「验证 / 提交」".tStatic(), true)
             } else {
-                LocalWriteResult("写入被拒绝：先点一下目标输入框再试，或在主屏打开该 App 手动输入", false)
+                LocalWriteResult("写入被拒绝：先点一下目标输入框再试，或在主屏打开该 App 手动输入".tStatic(), false)
             }
         }
     }

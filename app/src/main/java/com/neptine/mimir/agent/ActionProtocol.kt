@@ -258,10 +258,24 @@ object ActionProtocol {
      * 抛出：编号缺失或不存在（模型编造编号）时抛 ActionParseException
      */
     private fun requireElement(payload: JsonObject, snapshot: ObservationSnapshot): UiElement {
-        val index = payload["element"]?.jsonPrimitive?.intOrNull
+        val index = elementIndexOf(payload)
             ?: throw ActionParseException("动作缺少 element 编号")
         return snapshot.elements.firstOrNull { it.index == index }
             ?: throw ActionParseException("元素 #$index 不在当前元素表中（共 ${snapshot.elements.size} 个）")
+    }
+
+    /**
+     * 功能：从模型输出里取元素编号
+     * 参数：payload 模型输出对象
+     * 返回：编号；缺失或无法解析为整数时为 null
+     *
+     * 兼容 `30`、`"30"`、`"#30#"` 三种写法：不同模型对元素编号的包装习惯不同，
+     * 只接受纯数字会把一次正常的点击误判成"缺少编号"，直接让任务失败
+     * （真机回归实测：glm-5.3-flash 返回 "element":"#30#"）。
+     */
+    private fun elementIndexOf(payload: JsonObject): Int? {
+        val raw = payload["element"]?.jsonPrimitive?.contentOrNull?.trim() ?: return null
+        return raw.trim('#').trim().toIntOrNull()
     }
 
     /**

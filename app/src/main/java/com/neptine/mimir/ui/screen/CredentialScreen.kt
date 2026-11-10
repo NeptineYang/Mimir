@@ -1,6 +1,6 @@
 package com.neptine.mimir.ui.screen
 
-import androidx.compose.foundation.background
+import com.neptine.mimir.ui.i18n.t
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,7 +46,7 @@ import java.time.ZoneId
  * 密码只写进 Keystore 加密存储，列表与提示都不回显正文；凭据页也不参与记忆导出。
  */
 @Composable
-fun CredentialScreen(onBack: () -> Unit) {
+fun CredentialScreen() {
     val viewModel: CredentialViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = LocalMimirColors.current
@@ -55,29 +55,25 @@ fun CredentialScreen(onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.canvas)
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = MimirSpacing.xl),
     ) {
         MimirPageHeader(
-            eyebrow = "06 CREDENTIALS",
-            title = "凭据",
-            subtitle = "只保存普通登录密码；模型只看得到凭据编号，看不到正文",
-            trailing = { TextActionButton(text = "返回", onClick = onBack) },
+            title = "凭据".t(),
         )
 
         Notice(state, onDismiss = viewModel::clearNotice)
 
         SectionBlock(
-            title = "登录密码",
-            trailing = { TextActionButton(text = "新增", onClick = { adding = true }) },
+            title = "登录密码".t(),
+            trailing = { TextActionButton(text = "新增".t(), emphasis = true, onClick = { adding = true }) },
         ) {
             if (state.rows.isEmpty()) {
                 EmptyState(
-                    title = "还没有凭据",
-                    hint = "保存后，登录页上模型只能请求「使用哪条凭据」；密码由本地解密填充，" +
-                        "不进入 prompt、审计或配方导出。",
+                    title = "还没有凭据".t(),
+                    hint = "保存后，登录页上模型只能请求「使用哪条凭据」；密码由本地解密填充，".t() +
+                        "不进入 prompt、审计或配方导出。".t(),
                 )
             } else {
                 state.rows.forEach { row ->
@@ -87,8 +83,8 @@ fun CredentialScreen(onBack: () -> Unit) {
         }
 
         Text(
-            text = "支付密码、短信验证码、银行卡、人脸/指纹与账号安全设置仍为 L2B，" +
-                "只能由本人操作，任何凭据都不会用于这些步骤。",
+            text = "支付密码、短信验证码、银行卡、人脸/指纹与账号安全设置仍为 L2B，".t() +
+                "只能由本人操作，任何凭据都不会用于这些步骤。".t(),
             style = MaterialTheme.typography.bodySmall,
             color = colors.slate,
             modifier = Modifier.padding(top = MimirSpacing.sm, bottom = MimirSpacing.section),
@@ -126,7 +122,7 @@ private fun Notice(state: CredentialUiState, onDismiss: () -> Unit) {
             color = if (state.error != null) colors.error else colors.ink,
             modifier = Modifier.weight(1f),
         )
-        TextActionButton(text = "关闭", onClick = onDismiss)
+        TextActionButton(text = "关闭".t(), onClick = onDismiss)
     }
 }
 
@@ -141,7 +137,7 @@ private fun CredentialListRow(row: CredentialRow, onDelete: () -> Unit) {
         title = row.accountAlias,
         meta = row.packageName,
         note = "普通登录密码 · 密码已加密存储 · 创建于 ${formatDate(row.createdAt)}",
-        trailing = { TextActionButton(text = "删除", onClick = onDelete) },
+        trailing = { TextActionButton(text = "删除".t(), onClick = onDelete) },
     )
 }
 
@@ -161,7 +157,7 @@ private fun CredentialEditor(
 
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("保存登录密码") },
+        title = { Text("保存登录密码".t()) },
         text = {
             Column(
                 modifier = Modifier.heightIn(max = 520.dp),
@@ -170,35 +166,35 @@ private fun CredentialEditor(
                 OutlinedTextField(
                     value = packageName,
                     onValueChange = { packageName = it },
-                    label = { Text("应用包名") },
+                    label = { Text("应用包名".t()) },
                     placeholder = { Text("com.example.app") },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = alias,
                     onValueChange = { alias = it },
-                    label = { Text("账号别名") },
-                    placeholder = { Text("例如 user@example.com") },
+                    label = { Text("账号别名".t()) },
+                    placeholder = { Text("例如 user@example.com".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = secret,
                     onValueChange = { secret = it },
-                    label = { Text("密码") },
+                    label = { Text("密码".t()) },
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                 )
                 Text(
-                    text = "密码写入 Keystore 加密存储，不进入记忆、导出与模型上下文。",
+                    text = "密码写入 Keystore 加密存储，不进入记忆、导出与模型上下文。".t(),
                     style = MaterialTheme.typography.bodySmall,
                     color = LocalMimirColors.current.slate,
                 )
             }
         },
         confirmButton = {
-            TextActionButton(text = "保存", emphasis = true, onClick = { onSave(packageName, alias, secret) })
+            TextActionButton(text = "保存".t(), emphasis = true, onClick = { onSave(packageName, alias, secret) })
         },
-        dismissButton = { TextActionButton(text = "取消", onClick = onCancel) },
+        dismissButton = { TextActionButton(text = "取消".t(), onClick = onCancel) },
     )
 }
 

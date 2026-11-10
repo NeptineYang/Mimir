@@ -34,6 +34,35 @@ data class AuditStatsRow(
     @ColumnInfo(name = "action_kind") val actionKind: String,
 )
 
+/**
+ * 审计事件投影：一行 = 一次需要人关心的高危/非放行动作，带任务标题。
+ *
+ * @property id 审计行主键，事件详情按它取
+ * @property taskId 归属任务
+ * @property taskTitle 任务原话；任务被删后为 null
+ * @property stepIndex 任务内步序
+ * @property timestamp 发生时间
+ * @property actionKind 动作类型
+ * @property riskLevel 风险等级（L0/L1/L2A/L2B）
+ * @property decision 处置结论（ALLOW/CONFIRM/RETRY/BLOCK…）
+ * @property outcome 动作结果
+ * @property targetText 目标文本；没有时为 null
+ * @property subGoal 当步子目标，作为标题兜底
+ */
+data class AuditEventRow(
+    @ColumnInfo(name = "id") val id: Long,
+    @ColumnInfo(name = "task_id") val taskId: String,
+    @ColumnInfo(name = "task_title") val taskTitle: String?,
+    @ColumnInfo(name = "step_idx") val stepIndex: Int,
+    @ColumnInfo(name = "ts") val timestamp: Long,
+    @ColumnInfo(name = "action_kind") val actionKind: String,
+    @ColumnInfo(name = "risk_level") val riskLevel: String,
+    @ColumnInfo(name = "decision") val decision: String,
+    @ColumnInfo(name = "outcome") val outcome: String?,
+    @ColumnInfo(name = "target_text") val targetText: String?,
+    @ColumnInfo(name = "sub_goal") val subGoal: String,
+)
+
 /** 每步审计的读写口（设计文档 §4.4）。 */
 @Dao
 interface AuditDao {
@@ -76,6 +105,63 @@ interface AuditDao {
      */
     @Query("SELECT * FROM audit WHERE task_id = :taskId ORDER BY step_idx ASC, id ASC")
     fun observeByTask(taskId: String): Flow<List<AuditEntity>>
+
+    /**
+     * 功能：观察高危操作事件流，并按筛选口径收窄
+     * 参数：mode 0 全部 / 1 仅阻断 / 2 仅确认 / 3 仅失败；limit 每页条数；offset 跳过多少条
+     * 返回：风险等级为 L2A/L2B，或处置结论不是 ALLOW 的审计行，按时间倒序
+     *
+     * 这是审计页的主查询：它回答"哪些操作需要人关心、属于哪条任务"，
+     * 不要求用户先选任务。SQL 里过滤而不是在 UI 层筛，避免把整张审计表读进内存；
+     * 筛选也用同一个查询的 mode 参数表达，避免为四种口径写四份投影。
+     */
+    @Query(
+        """
+        SELECT a.id AS id, a.task_id AS task_id, t.input_text AS task_title,
+               a.step_idx AS step_idx, a.ts AS ts, a.action_kind AS action_kind,
+               a.risk_level AS risk_level, a.decision AS decision, a.outcome AS outcome,
+               a.target_text AS target_text, a.sub_goal AS sub_goal
+        FROM audit a LEFT JOIN tasks t ON t.task_id = a.task_id
+        WHERE (a.risk_level IN ('L2A', 'L2B') OR a.decision <> 'ALLOW')
+          AND (:mode = 0
+               OR (:mode = 1 AND (a.risk_level = 'L2B' OR a.decision IN ('BLOCK', 'DENY')))
+               OR (:mode = 2 AND a.decision = 'CONFIRM')
+               OR (:mode = 3 AND a.outcome IS NOT NULL AND a.outcome <> 'SUCCESS'))
+        ORDER BY a.ts DESC, a.id DESC
+        LIMIT :limit OFFSET :offset
+        """,
+    )
+    fun observeRiskEvents(mode: Int, limit: Int, offset: Int): Flow<List<AuditEventRow>>
+
+    /**
+     * 功能：统计筛选后的高危事件总数
+     * 参数：mode 与 [observeRiskEvents] 相同的筛选口径
+     * 返回：总条数流
+     *
+     * 分页条需要总页数；不先 COUNT 就得靠"多取一条探测下一页"，
+     * 会让页码显示在最后一页之前一直是未知。
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM audit a
+        WHERE (a.risk_level IN ('L2A', 'L2B') OR a.decision <> 'ALLOW')
+          AND (:mode = 0
+               OR (:mode = 1 AND (a.risk_level = 'L2B' OR a.decision IN ('BLOCK', 'DENY')))
+               OR (:mode = 2 AND a.decision = 'CONFIRM')
+               OR (:mode = 3 AND a.outcome IS NOT NULL AND a.outcome <> 'SUCCESS'))
+        """,
+    )
+    fun countRiskEvents(mode: Int): Flow<Int>
+
+    /**
+     * 功能：按主键观察单条审计
+     * 参数：id 审计行主键
+     * 返回：该行；被删除后发 null
+     *
+     * 事件详情只吃这一条，不重查整条时间轴。
+     */
+    @Query("SELECT * FROM audit WHERE id = :id")
+    fun observeById(id: Long): Flow<AuditEntity?>
 
     /**
      * 功能：取某任务的全部动作记录，按写入顺序

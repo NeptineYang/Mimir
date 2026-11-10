@@ -33,8 +33,8 @@ android {
         applicationId = "com.neptine.mimir"
         minSdk = 30
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.2.1"
+        versionCode = 13
+        versionName = "0.3.1"
 
         // sherpa-onnx 的 AAR 带全部 ABI，只留演示机（arm64）与 AVD（x86_64）两套。
         ndk {

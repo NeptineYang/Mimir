@@ -11,16 +11,80 @@ import com.neptine.mimir.data.db.MimirDatabase
 import com.neptine.mimir.data.memory.ProcedureCodec
 import com.neptine.mimir.observation.AuditScreenshotStore
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.time.DayOfWeek
+import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+/**
+ * 历史页的时间筛选口径。
+ */
+enum class HistoryFilter {
+    TODAY,
+    WEEK,
+    MONTH,
+    ALL,
+    ;
+
+    /**
+     * 功能：计算筛选起点
+     * 参数：now 当前时间戳（便于测试注入）
+     * 返回：起始毫秒；ALL 返回 0
+     *
+     * 周按 ISO 口径从周一开始；"今天/本周/本月"都以本地时区的零点为界。
+     */
+    fun sinceMillis(now: Long = System.currentTimeMillis()): Long {
+        if (this == ALL) return 0L
+        val zone = ZoneId.systemDefault()
+        val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+        val start = when (this) {
+            WEEK -> today.with(DayOfWeek.MONDAY)
+            MONTH -> today.withDayOfMonth(1)
+            else -> today
+        }
+        return start.atStartOfDay(zone).toInstant().toEpochMilli()
+    }
+}
+
+/**
+ * 历史任务列表的一页。
+ *
+ * @property rows 当前页任务
+ * @property page 当前页（从 0 开始，已按页数夹紧）
+ * @property pageCount 总页数；0 表示没有任务
+ * @property total 当前筛选下的总条数
+ */
+data class HistoryPage(
+    val rows: List<TaskRow>,
+    val page: Int,
+    val pageCount: Int,
+    val total: Int,
+)
+
+/**
+ * 历史页里展开的那一条任务的细节。
+ *
+ * @property taskId 当前展开的任务；同一时刻只允许展开一条
+ * @property steps 该任务的步骤摘要（不含证据字段）
+ */
+data class HistoryDetail(
+    val taskId: String,
+    val steps: List<AuditRow>,
+)
 
 /**
  * 历史页状态持有者。
@@ -34,11 +98,66 @@ class HistoryViewModel @Inject constructor(
     private val orchestrator: Orchestrator,
 ) : ViewModel() {
 
-    /** 历史任务；null 表示首帧尚未到达，避免先闪一下"没有历史记录"。 */
-    val tasks: StateFlow<List<TaskRow>?> = database.taskDao().observeFinished()
-        .map { list -> list.map { it.toRow() } }
+    private val filter = MutableStateFlow(HistoryFilter.ALL)
+    private val page = MutableStateFlow(0)
+
+    /** 当前时间筛选口径，供界面高亮。 */
+    val selectedFilter: StateFlow<HistoryFilter> = filter.asStateFlow()
+
+    /**
+     * 筛选后的全部任务；null 表示首帧尚未到达。
+     *
+     * 筛选放在 SQL（observeFinishedSince），不在 UI 层过滤整表；
+     * 分页在拿到列表后切片——任务量级不大，且需要总数算页数。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val filtered: StateFlow<List<TaskRow>?> = filter
+        .flatMapLatest { current ->
+            database.taskDao().observeFinishedSince(current.sinceMillis())
+                .map { list -> list.map { it.toRow() } }
+        }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 当前页；null 表示首帧尚未到达。 */
+    val pageState: StateFlow<HistoryPage?> = combine(filtered, page) { list, index ->
+        if (list == null) {
+            null
+        } else {
+            val pageCount = if (list.isEmpty()) 0 else (list.size + PAGE_SIZE - 1) / PAGE_SIZE
+            val safePage = index.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+            HistoryPage(
+                rows = list.drop(safePage * PAGE_SIZE).take(PAGE_SIZE),
+                page = safePage,
+                pageCount = pageCount,
+                total = list.size,
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * 功能：切换时间筛选
+     * 参数：value 目标口径
+     * 返回：无
+     */
+    fun setFilter(value: HistoryFilter) {
+        if (filter.value == value) return
+        filter.value = value
+        page.value = 0
+    }
+
+    /** 功能：上一页；参数：无；返回：无。 */
+    fun goPrev() {
+        page.value = ((pageState.value?.page ?: page.value) - 1).coerceAtLeast(0)
+    }
+
+    /** 功能：下一页；参数：无；返回：无。 */
+    fun goNext() {
+        val current = pageState.value ?: return
+        if (current.page < current.pageCount - 1) {
+            page.value = current.page + 1
+        }
+    }
 
     /**
      * 运行统计；null 表示首帧尚未到达。
@@ -63,6 +182,42 @@ class HistoryViewModel @Inject constructor(
      */
     fun openResult(taskId: String) {
         viewModelScope.launch { runCatching { orchestrator.openResultOnMain(taskId) } }
+    }
+
+    /** 当前展开的任务标识；null 表示全部收起。 */
+    private val expandedTaskId = MutableStateFlow<String?>(null)
+
+    /**
+     * 展开项的任务摘要与步骤摘要。
+     *
+     * 用 flatMapLatest 按需订阅审计表：收起时退化成 flowOf(null)，
+     * 不订阅任何任务，也就不会为看不见的行持续查库。
+     * 这里只取步骤行做摘要，证据字段属于审计事件详情，不在历史里展开。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val detail: StateFlow<HistoryDetail?> = expandedTaskId
+        .flatMapLatest { taskId ->
+            if (taskId == null) {
+                flowOf<HistoryDetail?>(null)
+            } else {
+                database.auditDao().observeByTask(taskId).map { entities ->
+                    HistoryDetail(taskId = taskId, steps = entities.map { it.toRow() })
+                }
+            }
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * 功能：展开或收起某条历史任务
+     * 参数：taskId 任务标识
+     * 返回：无
+     *
+     * 手风琴语义：再点同一条即收起；点另一条时上一条自动收起，
+     * 避免多条同时展开把页面拉成几屏长的证据流。
+     */
+    fun toggleExpanded(taskId: String) {
+        expandedTaskId.value = if (expandedTaskId.value == taskId) null else taskId
     }
 
     /**
@@ -125,5 +280,8 @@ class HistoryViewModel @Inject constructor(
     private companion object {
         /** 任务后确认的偏好置信度：低于手写 1.0，高于未验证的自动推断。 */
         const val TAUGHT_PREFERENCE_CONFIDENCE = 0.9
+
+        /** 每页任务数。 */
+        const val PAGE_SIZE = 20
     }
 }

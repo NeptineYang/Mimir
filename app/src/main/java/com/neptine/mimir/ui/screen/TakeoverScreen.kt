@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.screen
 
+import com.neptine.mimir.ui.i18n.t
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,7 +61,7 @@ import com.neptine.mimir.ui.viewmodel.TakeoverViewModel
 /** 副屏原生分辨率的宽高比；画面框按它比例还原，避免预览变形。 */
 private const val SECONDARY_DISPLAY_RATIO = 720f / 1600f
 
-/** 判定"这一步可以继续一次"的审计处置值，与 Orchestrator 写入的一致。 */
+/** 判定"这一步可以继续一次".t()的审计处置值，与 Orchestrator 写入的一致。 */
 private const val DECISION_NEED_CONFIRM = "NEED_CONFIRM"
 
 /** 结果未知、必须先只读核对的审计结果值，与 Orchestrator 写入的一致。 */
@@ -126,7 +127,6 @@ fun TakeoverScreen(onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.canvas)
             .statusBarsPadding()
             .imePadding()
             .verticalScroll(rememberScrollState())
@@ -139,7 +139,7 @@ fun TakeoverScreen(onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextActionButton(
-                text = "← 返回",
+                text = "← 返回".t(),
                 onClick = {
                     viewModel.exitTakeover()
                     onBack()
@@ -156,7 +156,7 @@ fun TakeoverScreen(onBack: () -> Unit) {
         // 滚动区里，位置会随预览高度浮动，自动化与真人都可能点进预览区把事件发到副屏
         // （真机实测：盲点旧坐标实际点到了 DeepSeek）。放在最上面则位置恒定、永远可见。
         task?.takeIf { it.state == TaskState.NEED_HUMAN }?.let {
-            SectionBlock(title = "处置") {
+            SectionBlock(title = "处置".t()) {
                 PendingActions(
                     mode = resumeModeOf(lastStep),
                     onContinue = viewModel::continueTask,
@@ -183,7 +183,7 @@ fun TakeoverScreen(onBack: () -> Unit) {
                     if (shown != null) {
                         Image(
                             bitmap = shown.asImageBitmap(),
-                            contentDescription = if (replayIndex != null) "回放画面" else "副屏实时画面",
+                            contentDescription = if (replayIndex != null) "回放画面".t() else "副屏实时画面".t(),
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
@@ -238,9 +238,9 @@ fun TakeoverScreen(onBack: () -> Unit) {
                                 },
                         )
                         val badge = when {
-                            takeover -> "接管中 · 触控已转发" to colors.coral
-                            replayIndex != null -> "回放 · 第 ${steps.getOrNull(replayIndex!!)?.stepIndex ?: 0} 步" to colors.actionBlue
-                            paused -> "已暂停 · 保留最后一帧" to colors.slate
+                            takeover -> "接管中 · 触控已转发".t() to colors.coral
+                            replayIndex != null -> "回放 · 第 %1\$d 步".t(steps.getOrNull(replayIndex!!)?.stepIndex ?: 0) to colors.actionBlue
+                            paused -> "已暂停 · 保留最后一帧".t() to colors.slate
                             else -> null to colors.slate
                         }
                         if (badge.first != null) {
@@ -269,12 +269,12 @@ fun TakeoverScreen(onBack: () -> Unit) {
                             ) {
                                 MonoLabel(text = "NO FRAME", color = colors.onDark.copy(alpha = 0.4f))
                                 Text(
-                                    text = "该步未留存画面",
+                                    text = "该步未留存画面".t(),
                                     style = MaterialTheme.typography.headlineSmall,
                                     color = colors.onDark,
                                 )
                                 Text(
-                                    text = "截图在动作执行后写入；这条记录早于截图留存，或该步没有可用的前后帧。",
+                                    text = "截图在动作执行后写入；这条记录早于截图留存，或该步没有可用的前后帧。".t(),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = colors.onDark.copy(alpha = 0.62f),
                                 )
@@ -291,12 +291,12 @@ fun TakeoverScreen(onBack: () -> Unit) {
                             ) {
                                 MonoLabel(text = "NO SIGNAL", color = colors.onDark.copy(alpha = 0.4f))
                                 Text(
-                                    text = "暂无副屏画面",
+                                    text = "暂无副屏画面".t(),
                                     style = MaterialTheme.typography.headlineSmall,
                                     color = colors.onDark,
                                 )
                                 Text(
-                                    text = "任务挂起期间副屏会保留并在这里显示；任务未挂起或副屏已销毁时没有画面。",
+                                    text = "任务挂起期间副屏会保留并在这里显示；任务未挂起或副屏已销毁时没有画面。".t(),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = colors.onDark.copy(alpha = 0.62f),
                                 )
@@ -330,10 +330,13 @@ fun TakeoverScreen(onBack: () -> Unit) {
             Text(
                 text = when {
                     replayStep != null ->
-                        "第 ${replayStep.stepIndex} 步 · ${replayStep.actionKind.ifEmpty { "无动作" }} · " +
-                            (replayStep.outcome ?: replayStep.decision)
-                    takeover -> "接管中 · 画面来自副屏，触控已转发"
-                    paused -> "画面已暂停 · 保留最后一帧，不继续取帧"
+                        "第 %1\$d 步 · %2\$s · %3\$s".t(
+                            replayStep.stepIndex,
+                            replayStep.actionKind.ifEmpty { "无动作".t() },
+                            replayStep.outcome ?: replayStep.decision,
+                        )
+                    takeover -> "接管中 · 画面来自副屏，触控已转发".t()
+                    paused -> "画面已暂停 · 保留最后一帧，不继续取帧".t()
                     else -> previewLine(previewFrame, task?.state)
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -345,7 +348,7 @@ fun TakeoverScreen(onBack: () -> Unit) {
         // 虚拟屏上弹不出可见键盘，输入法也不会跟着触控转发过去；"人工输入"缺的
         // 就是这条把文字送进副屏焦点控件的通道（验证码那类场景的唯一出路）。
         if (takeover) {
-            SectionBlock(title = "输入", modifier = Modifier.padding(top = MimirSpacing.lg)) {
+            SectionBlock(title = "输入".t(), modifier = Modifier.padding(top = MimirSpacing.lg)) {
                 LocalInputRow(
                     value = localText,
                     onValueChange = viewModel::onLocalTextChange,
@@ -366,37 +369,37 @@ fun TakeoverScreen(onBack: () -> Unit) {
             ) {
                 if (replayAt == null) {
                     TextActionButton(
-                        text = if (paused) "继续画面" else "暂停画面",
+                        text = if (paused) "继续画面".t() else "暂停画面".t(),
                         onClick = viewModel::togglePause,
                         enabled = previewFrame != null,
                     )
                     TextActionButton(
-                        text = "单步回放",
+                        text = "单步回放".t(),
                         onClick = viewModel::startReplay,
                         enabled = steps.isNotEmpty(),
                     )
                 } else {
                     TextActionButton(
-                        text = "上一步",
+                        text = "上一步".t(),
                         onClick = viewModel::replayPrevious,
                         enabled = replayAt > 0,
                     )
                     TextActionButton(
-                        text = "下一步",
+                        text = "下一步".t(),
                         onClick = viewModel::replayNext,
                         enabled = replayAt < steps.lastIndex,
                     )
                     TextActionButton(
-                        text = "退出回放",
+                        text = "退出回放".t(),
                         onClick = viewModel::exitReplay,
                     )
                 }
             }
             Text(
                 text = if (replayAt == null) {
-                    "查看档只读：暂停只冻结画面，不改变任务状态；回放按审计时间轴逐步查看当时的画面与结果。"
+                    "查看档只读：暂停只冻结画面，不改变任务状态；回放按审计时间轴逐步查看当时的画面与结果。".t()
                 } else {
-                    "回放只读：不注入动作、不改变任务；需要自己操作时先退出回放再进入接管档。"
+                    "回放只读：不注入动作、不改变任务；需要自己操作时先退出回放再进入接管档。".t()
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.muted,
@@ -405,18 +408,18 @@ fun TakeoverScreen(onBack: () -> Unit) {
         }
 
         replayStep?.let { step ->
-            SectionBlock(title = "单步回放", modifier = Modifier.padding(top = MimirSpacing.xl)) {
-                KeyValueRow(key = "步序", value = "第 ${step.stepIndex} 步")
-                KeyValueRow(key = "动作", value = actionLine(step.actionKind, step.targetText))
-                KeyValueRow(key = "结果", value = step.outcome ?: "—", mono = true)
-                KeyValueRow(key = "处置", value = step.decision, mono = true)
-                KeyValueRow(key = "说明", value = step.reviewReason ?: "—")
+            SectionBlock(title = "单步回放".t(), modifier = Modifier.padding(top = MimirSpacing.xl)) {
+                KeyValueRow(key = "步序".t(), value = "第 %1\$d 步".t(step.stepIndex))
+                KeyValueRow(key = "动作".t(), value = actionLine(step.actionKind, step.targetText))
+                KeyValueRow(key = "结果".t(), value = step.outcome ?: "—", mono = true)
+                KeyValueRow(key = "处置".t(), value = step.decision, mono = true)
+                KeyValueRow(key = "说明".t(), value = step.reviewReason ?: "—")
                 KeyValueRow(
-                    key = "画面",
+                    key = "画面".t(),
                     value = when {
-                        replayFrame != null -> "已留存"
-                        step.screenshotAfter != null || step.screenshotBefore != null -> "读取失败"
-                        else -> "该步未留存截图"
+                        replayFrame != null -> "已留存".t()
+                        step.screenshotAfter != null || step.screenshotBefore != null -> "读取失败".t()
+                        else -> "该步未留存截图".t()
                     },
                 )
             }
@@ -427,16 +430,16 @@ fun TakeoverScreen(onBack: () -> Unit) {
         val current = task
         if (current == null) {
             EmptyState(
-                title = "没有可接管的任务",
-                hint = "接管页在任务进入 NEED_HUMAN 时使用，需要一个任务标识。当前没有挂起的任务。",
-                action = { TextActionButton(text = "去队列看看", onClick = onBack) },
+                title = "没有可接管的任务".t(),
+                hint = "接管页在任务进入 NEED_HUMAN 时使用，需要一个任务标识。当前没有挂起的任务。".t(),
+                action = { TextActionButton(text = "去队列看看".t(), onClick = onBack) },
             )
         } else {
-            SectionBlock(title = "任务") {
-                KeyValueRow(key = "原始输入", value = current.inputText)
-                KeyValueRow(key = "当前步骤", value = current.currentSubGoal ?: "—")
-                KeyValueRow(key = "步数", value = "${current.stepCount} / 40")
-                KeyValueRow(key = "挂起原因", value = current.suspendReason ?: "—")
+            SectionBlock(title = "任务".t()) {
+                KeyValueRow(key = "原始输入".t(), value = current.inputText)
+                KeyValueRow(key = "当前步骤".t(), value = current.currentSubGoal ?: "—")
+                KeyValueRow(key = "步数".t(), value = "${current.stepCount} / 40")
+                KeyValueRow(key = "挂起原因".t(), value = current.suspendReason ?: "—")
                 Row(
                     modifier = Modifier.padding(top = MimirSpacing.sm),
                     verticalAlignment = Alignment.CenterVertically,
@@ -446,14 +449,14 @@ fun TakeoverScreen(onBack: () -> Unit) {
 
                 val step = lastStep
                 if (step != null) {
-                    KeyValueRow(key = "最近动作", value = actionLine(step.actionKind, step.targetText))
-                    KeyValueRow(key = "风险等级", value = step.riskLevel?.name ?: "—")
-                    KeyValueRow(key = "处置", value = step.decision)
+                    KeyValueRow(key = "最近动作".t(), value = actionLine(step.actionKind, step.targetText))
+                    KeyValueRow(key = "风险等级".t(), value = step.riskLevel?.name ?: "—")
+                    KeyValueRow(key = "处置".t(), value = step.decision)
                 }
             }
         }
 
-        SectionBlock(title = "档位", modifier = Modifier.padding(top = MimirSpacing.xxl)) {
+        SectionBlock(title = "档位".t(), modifier = Modifier.padding(top = MimirSpacing.xxl)) {
             val canEnterTakeover = previewFrame != null && task?.state == TaskState.NEED_HUMAN
             Row(
                 modifier = Modifier.padding(top = MimirSpacing.xs),
@@ -461,12 +464,12 @@ fun TakeoverScreen(onBack: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextActionButton(
-                    text = if (takeover) "接管档" else "查看档",
+                    text = if (takeover) "接管档".t() else "查看档".t(),
                     onClick = {},
                     enabled = false,
                 )
                 TextActionButton(
-                    text = if (takeover) "交还 agent" else "接管操作",
+                    text = if (takeover) "交还 agent".t() else "接管操作".t(),
                     onClick = if (takeover) viewModel::handBack else viewModel::enterTakeover,
                     enabled = takeover || canEnterTakeover,
                 )
@@ -474,11 +477,11 @@ fun TakeoverScreen(onBack: () -> Unit) {
             Text(
                 text = when {
                     takeover ->
-                        "触控已转发到副屏。操作完成后点「交还 agent」，Agent 会重新观测再继续。"
+                        "触控已转发到副屏。操作完成后点「交还 agent」，Agent 会重新观测再继续。".t()
                     !canEnterTakeover ->
-                        "查看档为只读预览；当前没有可用的副屏画面，无法进入接管档。"
+                        "查看档为只读预览；当前没有可用的副屏画面，无法进入接管档。".t()
                     else ->
-                        "查看档只读预览，不取得副屏触控权；需要自己操作 App 时进入接管档。"
+                        "查看档只读预览，不取得副屏触控权；需要自己操作 App 时进入接管档。".t()
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.slate,
@@ -523,7 +526,7 @@ private fun LocalInputRow(
         ) {
             if (value.isEmpty()) {
                 Text(
-                    text = "在主屏打字，写入副屏输入框",
+                    text = "在主屏打字，写入副屏输入框".t(),
                     style = MaterialTheme.typography.bodyLarge,
                     color = colors.muted,
                 )
@@ -539,13 +542,13 @@ private fun LocalInputRow(
         }
         Spacer(modifier = Modifier.size(MimirSpacing.sm))
         TextActionButton(
-            text = if (writing) "写入中…" else "写入副屏",
+            text = if (writing) "写入中…".t() else "写入副屏".t(),
             onClick = onWrite,
             enabled = value.isNotBlank() && !writing,
         )
     }
     Text(
-        text = result?.message ?: "先在预览里点一下目标输入框；写入后自己点「验证 / 提交」",
+        text = result?.message ?: "先在预览里点一下目标输入框；写入后自己点「验证 / 提交」".t(),
         style = MaterialTheme.typography.bodySmall,
         color = if (result?.ok == false) colors.coral else colors.muted,
         modifier = Modifier.padding(top = MimirSpacing.sm),
@@ -584,11 +587,12 @@ private fun Offset.toFraction(
  *
  * 实时帧率不承诺 15–30fps：PixelCopy 单帧约 150–250ms，实际受取帧耗时限制。
  */
+@Composable
 private fun previewLine(frame: PreviewFrame?, state: TaskState?): String = when {
-    frame != null -> "实时画面 · ${frame.fps} fps · ${frame.source.name}"
-    state == TaskState.NEED_HUMAN -> "副屏已保留，等待第一帧…"
-    state == null -> "没有可预览的任务"
-    else -> "任务不在挂起状态，预览暂停"
+    frame != null -> "实时画面 · %1\$d fps · %2\$s".t(frame.fps, frame.source.name)
+    state == TaskState.NEED_HUMAN -> "副屏已保留，等待第一帧…".t()
+    state == null -> "没有可预览的任务".t()
+    else -> "任务不在挂起状态，预览暂停".t()
 }
 
 /**
@@ -626,23 +630,23 @@ private fun PendingActions(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         when (mode) {
-            ResumeMode.CONFIRM_ONCE -> TextActionButton(text = "继续一次", onClick = onContinue)
-            ResumeMode.PLAIN -> TextActionButton(text = "继续", onClick = onContinue)
-            ResumeMode.RECONCILE -> TextActionButton(text = "我已核对，继续", onClick = onContinueAfterCheck)
+            ResumeMode.CONFIRM_ONCE -> TextActionButton(text = "继续一次".t(), onClick = onContinue)
+            ResumeMode.PLAIN -> TextActionButton(text = "继续".t(), onClick = onContinue)
+            ResumeMode.RECONCILE -> TextActionButton(text = "我已核对，继续".t(), onClick = onContinueAfterCheck)
             ResumeMode.NONE -> Unit
         }
-        TextActionButton(text = "放弃", onClick = onAbort, color = colors.error)
+        TextActionButton(text = "放弃".t(), onClick = onAbort, color = colors.error)
     }
     Text(
         text = when (mode) {
             ResumeMode.CONFIRM_ONCE ->
-                "「继续一次」只授权刚被拦下的这一步；页面或参数变化后会重新请求确认。"
+                "「继续一次」只授权刚被拦下的这一步；页面或参数变化后会重新请求确认。".t()
             ResumeMode.PLAIN ->
-                "「继续」不会签发任何授权；Agent 重新观测后再决策。"
+                "「继续」不会签发任何授权；Agent 重新观测后再决策。".t()
             ResumeMode.RECONCILE ->
-                "「我已核对，继续」表示你已确认刚才的动作是否需要重放。Agent 不会重放它，只会重新观测当前页面后继续。"
+                "「我已核对，继续」表示你已确认刚才的动作是否需要重放。Agent 不会重放它，只会重新观测当前页面后继续。".t()
             ResumeMode.NONE ->
-                "这类挂起不能由 Agent 继续：仅本人步骤，或存在未决写入需要先只读核对。"
+                "这类挂起不能由 Agent 继续：仅本人步骤，或存在未决写入需要先只读核对。".t()
         },
         style = MaterialTheme.typography.bodySmall,
         color = colors.muted,

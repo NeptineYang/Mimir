@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.viewmodel
 
+import com.neptine.mimir.ui.i18n.tStatic
 import android.content.Context
 import android.os.Build
 import android.util.Log
@@ -109,7 +110,7 @@ data class SettingsUiState(
     val appMatrixLoading: Boolean = false,
     /** 本机可启动应用总数；矩阵为空时说明"有记录才列"而不是"一个都没装"。 */
     val launchableCount: Int = 0,
-    /** 可启动列表是否真的读到了；读不到时矩阵行只能标"未知"，不能标"不可用"。 */
+    /** 可启动列表是否真的读到了；读不到时矩阵行只能标"未知".tStatic()，不能标"不可用".tStatic()。 */
     val launchabilityKnown: Boolean = false,
     /** 端侧语音模型是否正在自检。 */
     val asrTesting: Boolean = false,
@@ -431,7 +432,7 @@ class SettingsViewModel @Inject constructor(
     ) {
         if (modelFlow.value.saving) return
         if (baseUrl.isBlank() || executorModel.isBlank()) {
-            modelFlow.value = modelFlow.value.copy(error = "base_url 与 executor 模型名不能为空")
+            modelFlow.value = modelFlow.value.copy(error = "base_url 与 executor 模型名不能为空".tStatic())
             return
         }
         modelFlow.value = modelFlow.value.copy(saving = true, error = null)
@@ -450,7 +451,7 @@ class SettingsViewModel @Inject constructor(
             }.onFailure { error ->
                 modelFlow.value = modelFlow.value.copy(
                     saving = false,
-                    error = error.message ?: "保存失败",
+                    error = error.message ?: "保存失败".tStatic(),
                 )
             }
         }
@@ -471,8 +472,8 @@ class SettingsViewModel @Inject constructor(
             val result = healthChecker.check()
             val text = when (result) {
                 is HealthResult.Success ->
-                    "连通正常 · ${result.model} · ${result.latencyMs}ms · 回复「${result.reply}」"
-                is HealthResult.Failure -> "连通失败 · ${result.reason}"
+                    "连通正常 · %1\$s · %2\$dms · 回复「%3\$s」".tStatic(result.model, result.latencyMs, result.reply)
+                is HealthResult.Failure -> "连通失败 · %1\$s".tStatic(result.reason)
             }
             modelFlow.value = modelFlow.value.copy(testing = false, testResult = text)
         }

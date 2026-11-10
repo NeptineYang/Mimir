@@ -13,7 +13,7 @@ import com.neptine.mimir.ui.theme.LocalMimirColors
  * 参数：text 标签文本；modifier 修饰符；color 文字色；uppercase 是否转大写
  * 返回：无
  *
- * 这类标签只承载 ASCII（MIMIR、ENGINE / OFFLINE、STEP 03）。中文不要走这里：
+ * 这类标签只承载 ASCII（MIMIR、ENGINE / OFFLINE、STEP 3）。中文不要走这里：
  * Space Mono 没有中文字形，加字距后中文会散架，中文标签请用 titleSmall。
  */
 @Composable

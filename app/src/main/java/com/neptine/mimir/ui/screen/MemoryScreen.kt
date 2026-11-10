@@ -1,8 +1,8 @@
 package com.neptine.mimir.ui.screen
 
+import com.neptine.mimir.ui.i18n.t
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,7 +60,7 @@ import java.util.UUID
  * 记忆编辑是低频维护动作，只在需要时从设置页进来。
  */
 @Composable
-fun MemoryScreen(onBack: () -> Unit) {
+fun MemoryScreen() {
     val viewModel: MemoryViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = LocalMimirColors.current
@@ -75,29 +75,25 @@ fun MemoryScreen(onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.canvas)
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = MimirSpacing.xl),
     ) {
         MimirPageHeader(
-            eyebrow = "05 MEMORY",
-            title = "记忆",
-            subtitle = "配方只在使用前自证有效；策略只影响规划，不进逐步决策",
-            trailing = { TextActionButton(text = "返回", onClick = onBack) },
+            title = "记忆".t(),
         )
 
         Notice(state, onDismiss = viewModel::dismissNotice)
 
         SectionBlock(
-            title = "配方",
-            trailing = { TextActionButton(text = "新建", onClick = viewModel::startCreate) },
+            title = "配方".t(),
+            trailing = { TextActionButton(text = "新增".t(), emphasis = true, onClick = viewModel::startCreate) },
         ) {
             if (state.procedures.isEmpty()) {
                 EmptyState(
-                    title = "还没有配方",
-                    hint = "配方记录「入口在哪、步骤怎么走」，使用时先核对锚点；" +
-                        "没有它 agent 只能靠探索。空的记忆表不会影响任务执行。",
+                    title = "还没有配方".t(),
+                    hint = "配方记录「入口在哪、步骤怎么走」，使用时先核对锚点；".t() +
+                        "没有它 agent 只能靠探索。空的记忆表不会影响任务执行。".t(),
                 )
             } else {
                 state.procedures.forEach { row ->
@@ -113,10 +109,10 @@ fun MemoryScreen(onBack: () -> Unit) {
         }
 
         SectionBlock(
-            title = "偏好与策略",
+            title = "偏好与策略".t(),
             trailing = {
                 TextActionButton(
-                    text = "新增",
+                    text = "新增".t(),
                     emphasis = true,
                     onClick = viewModel::startCreatePreference,
                 )
@@ -124,9 +120,9 @@ fun MemoryScreen(onBack: () -> Unit) {
         ) {
             if (state.preferences.isEmpty()) {
                 EmptyState(
-                    title = "还没有偏好",
-                    hint = "偏好写的是「用户更喜欢怎么做」：常用平台、常点店、点餐方式、发消息的语气。" +
-                        "它只在开局规划时注入 Planner，不会直接指挥每一步。",
+                    title = "还没有偏好".t(),
+                    hint = "偏好写的是「用户更喜欢怎么做」：常用平台、常点店、点餐方式、发消息的语气。".t() +
+                        "它只在开局规划时注入 Planner，不会直接指挥每一步。".t(),
                 )
             } else {
                 state.preferences.forEach { row ->
@@ -139,19 +135,19 @@ fun MemoryScreen(onBack: () -> Unit) {
             }
         }
 
-        SectionBlock(title = "导入导出") {
+        SectionBlock(title = "导入导出".t()) {
             Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md)) {
                 TextActionButton(
-                    text = "导出 JSON",
+                    text = "导出 JSON".t(),
                     onClick = { exportLauncher.launch("mimir-memory.json") },
                 )
                 TextActionButton(
-                    text = "导入 JSON",
+                    text = "导入 JSON".t(),
                     onClick = { importLauncher.launch(arrayOf("application/json")) },
                 )
             }
             Text(
-                text = "导出内容只含配方与锚点，不含凭据——凭据库不属于记忆体系。",
+                text = "导出内容只含配方与锚点，不含凭据——凭据库不属于记忆体系。".t(),
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.slate,
                 modifier = Modifier.padding(top = MimirSpacing.sm, bottom = MimirSpacing.xl),
@@ -205,7 +201,7 @@ private fun Notice(state: MemoryUiState, onDismiss: () -> Unit) {
             color = if (state.error != null) colors.error else colors.ink,
             modifier = Modifier.weight(1f),
         )
-        TextActionButton(text = "关闭", onClick = onDismiss)
+        TextActionButton(text = "关闭".t(), onClick = onDismiss)
     }
 }
 
@@ -232,21 +228,21 @@ private fun ProcedureListRow(
         meta = "${row.packageName} · ${row.taskType}",
         note = "${row.status} · ${row.source} · ${row.pageCount} 页 / ${row.actionCount} 动作 · " +
             "置信度 ${String.format(java.util.Locale.US, "%.2f", row.confidence)} · " +
-            if (attempts == 0) "尚未验证" else "成功 ${row.successCount}/$attempts",
+            if (attempts == 0) "尚未验证".t() else "成功 ${row.successCount}/$attempts",
         onClick = onEdit,
         trailing = {
             Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md)) {
                 TextActionButton(
-                    text = if (verifying) "核对中…" else "重验",
+                    text = if (verifying) "核对中…".t() else "重验".t(),
                     enabled = !verifying,
                     emphasis = true,
                     onClick = onReverify,
                 )
                 TextActionButton(
                     text = when (row.status) {
-                        "ACTIVE" -> "停用"
-                        "STALE" -> "待重验"
-                        else -> "启用"
+                        "ACTIVE" -> "停用".t()
+                        "STALE" -> "待重验".t()
+                        else -> "启用".t()
                     },
                     enabled = row.status != "STALE",
                     onClick = onToggle,
@@ -276,7 +272,7 @@ private fun PreferenceListRow(
         onClick = onEdit,
         trailing = {
             TextActionButton(
-                text = if (row.status == "ACTIVE") "停用" else "启用",
+                text = if (row.status == "ACTIVE") "停用".t() else "启用".t(),
                 color = if (row.status == "ACTIVE") colors.ink else colors.slate,
                 onClick = onToggle,
             )
@@ -307,7 +303,7 @@ private fun ProcedureEditor(
     val colors = LocalMimirColors.current
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text(text = if (draft.id == null) "新建配方" else "编辑配方") },
+        title = { Text(text = if (draft.id == null) "新建配方".t() else "编辑配方".t()) },
         text = {
             Column(
                 modifier = Modifier
@@ -317,39 +313,39 @@ private fun ProcedureEditor(
             ) {
                 if (onToggle != null && onDelete != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md)) {
-                        TextActionButton(text = "停用/启用", onClick = onToggle)
-                        TextActionButton(text = "删除", onClick = onDelete, color = colors.error)
+                        TextActionButton(text = "停用/启用".t(), onClick = onToggle)
+                        TextActionButton(text = "删除".t(), onClick = onDelete, color = colors.error)
                     }
                 }
                 OutlinedTextField(
                     value = draft.title,
                     onValueChange = { onChange(draft.copy(title = it)) },
-                    label = { Text("标题") },
-                    placeholder = { Text("领取外卖红包") },
+                    label = { Text("标题".t()) },
+                    placeholder = { Text("领取外卖红包".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = draft.packageName,
                     onValueChange = { onChange(draft.copy(packageName = it)) },
-                    label = { Text("包名") },
+                    label = { Text("包名".t()) },
                     placeholder = { Text("com.sankuai.meituan") },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = draft.taskType,
                     onValueChange = { onChange(draft.copy(taskType = it)) },
-                    label = { Text("任务类型（留空按 GENERAL）") },
+                    label = { Text("任务类型（留空按 GENERAL）".t()) },
                     placeholder = { Text("ORDER_FOOD") },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = draft.anchors,
                     onValueChange = { onChange(draft.copy(anchors = it)) },
-                    label = { Text("入口前置锚点（每行一条，A2 文本）") },
-                    placeholder = { Text("我的\n红包卡券") },
+                    label = { Text("入口前置锚点（每行一条，A2 文本）".t()) },
+                    placeholder = { Text("我的\n红包卡券".t()) },
                 )
                 Text(
-                    text = "配方树：App → 任务 → 页面 → 动作",
+                    text = "配方树：App → 任务 → 页面 → 动作".t(),
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.slate,
                 )
@@ -364,18 +360,18 @@ private fun ProcedureEditor(
                     )
                 }
                 TextActionButton(
-                    text = "+ 页面",
+                    text = "+ 页面".t(),
                     onClick = { onChange(draft.copy(pages = draft.pages + newPageDraft())) },
                 )
                 OutlinedTextField(
                     value = draft.postcondition,
                     onValueChange = { onChange(draft.copy(postcondition = it)) },
-                    label = { Text("后置条件（每行一条文本）") },
+                    label = { Text("后置条件（每行一条文本）".t()) },
                 )
                 OutlinedTextField(
                     value = draft.signature,
                     onValueChange = { onChange(draft.copy(signature = it)) },
-                    label = { Text("页面签名（每行一条静态文本，可留空）") },
+                    label = { Text("页面签名（每行一条静态文本，可留空）".t()) },
                 )
                 if (error != null) {
                     Text(
@@ -386,8 +382,8 @@ private fun ProcedureEditor(
                 }
             }
         },
-        confirmButton = { TextActionButton(text = "保存", onClick = onSave) },
-        dismissButton = { TextActionButton(text = "取消", onClick = onCancel) },
+        confirmButton = { TextActionButton(text = "保存".t(), onClick = onSave, emphasis = true) },
+        dismissButton = { TextActionButton(text = "取消".t(), onClick = onCancel) },
     )
 }
 
@@ -418,11 +414,11 @@ private fun ProcedurePageEditor(
             OutlinedTextField(
                 value = page.title,
                 onValueChange = { onChange(page.copy(title = it)) },
-                label = { Text("页面名") },
+                label = { Text("页面名".t()) },
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
-            TextActionButton(text = "删页", onClick = onDelete, color = colors.error)
+            TextActionButton(text = "删页".t(), onClick = onDelete, color = colors.error)
         }
         page.actions.forEachIndexed { actionIndex, action ->
             Column(modifier = Modifier.padding(start = MimirSpacing.lg)) {
@@ -449,12 +445,12 @@ private fun ProcedurePageEditor(
                         onValueChange = { text ->
                             onChange(page.replaceAction(action.id, action.copy(title = text)))
                         },
-                        label = { Text("动作名") },
+                        label = { Text("动作名".t()) },
                         singleLine = true,
                         modifier = Modifier.weight(1f),
                     )
                     TextActionButton(
-                        text = "删",
+                        text = "删".t(),
                         color = colors.error,
                         onClick = {
                             onChange(page.copy(actions = page.actions.filterNot { it.id == action.id }))
@@ -471,13 +467,13 @@ private fun ProcedurePageEditor(
                             ),
                         )
                     },
-                    label = { Text("锚点文本（A2；留空表示没有可断言目标）") },
+                    label = { Text("锚点文本（A2；留空表示没有可断言目标）".t()) },
                     singleLine = true,
                 )
             }
         }
         TextActionButton(
-            text = "+ 动作",
+            text = "+ 动作".t(),
             onClick = { onChange(page.copy(actions = page.actions + newActionDraft())) },
         )
         MimirHairline()

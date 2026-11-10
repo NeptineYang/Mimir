@@ -39,7 +39,7 @@ fun KeyValueRow(
             text = key,
             style = MaterialTheme.typography.bodyMedium,
             color = LocalMimirColors.current.slate,
-            modifier = Modifier.weight(0.38f),
+            modifier = Modifier.weight(0.34f),
         )
         Text(
             text = value,
@@ -50,7 +50,7 @@ fun KeyValueRow(
             },
             color = valueColor,
             modifier = Modifier
-                .weight(0.62f)
+                .weight(0.66f)
                 .padding(start = MimirSpacing.sm),
         )
     }

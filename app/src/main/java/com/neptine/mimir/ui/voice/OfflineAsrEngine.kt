@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.voice
 
+import com.neptine.mimir.ui.i18n.tStatic
 import android.content.Context
 import android.os.SystemClock
 import com.k2fsa.sherpa.onnx.FeatureConfig
@@ -79,10 +80,10 @@ internal object OfflineAsrEngine {
      * 返回：可直接展示的中文结论
      */
     fun selfCheck(context: Context): String {
-        if (recognizer != null) return "模型已就绪（进程内已加载）"
+        if (recognizer != null) return "模型已就绪（进程内已加载）".tStatic()
         val begin = SystemClock.elapsedRealtime()
-        ensureLoaded(context) ?: return "加载失败：${lastError ?: "未知原因"}"
-        return "加载正常，耗时 ${SystemClock.elapsedRealtime() - begin} ms"
+        ensureLoaded(context) ?: return "加载失败：%1\$s".tStatic(lastError ?: "未知原因".tStatic())
+        return "加载正常，耗时 %1\$d ms".tStatic(SystemClock.elapsedRealtime() - begin)
     }
 
     /**

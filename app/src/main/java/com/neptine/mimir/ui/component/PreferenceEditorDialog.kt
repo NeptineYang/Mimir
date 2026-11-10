@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.component
 
+import com.neptine.mimir.ui.i18n.t
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,7 +42,7 @@ fun PreferenceEditorDialog(
     val colors = LocalMimirColors.current
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text(text = if (draft.id == null) "新建偏好" else "编辑偏好") },
+        title = { Text(text = if (draft.id == null) "新建偏好".t() else "编辑偏好".t()) },
         text = {
             Column(
                 modifier = Modifier
@@ -51,7 +52,7 @@ fun PreferenceEditorDialog(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "类别",
+                        text = "类别".t(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.slate,
                         modifier = Modifier.padding(end = MimirSpacing.md),
@@ -61,7 +62,7 @@ fun PreferenceEditorDialog(
                         onClick = { onChange(draft.copy(category = draft.category.next())) },
                     )
                     Text(
-                        text = "点一下切换",
+                        text = "点一下切换".t(),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.slate,
                     )
@@ -69,34 +70,34 @@ fun PreferenceEditorDialog(
                 OutlinedTextField(
                     value = draft.title,
                     onValueChange = { onChange(draft.copy(title = it)) },
-                    label = { Text("标题") },
-                    placeholder = { Text("看视频优先用 B 站") },
+                    label = { Text("标题".t()) },
+                    placeholder = { Text("看视频优先用 B 站".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = draft.content,
                     onValueChange = { onChange(draft.copy(content = it)) },
-                    label = { Text("偏好内容（注入 Planner 的自然语言）") },
-                    placeholder = { Text("看视频时优先打开 B 站，不要用抖音") },
+                    label = { Text("偏好内容（注入 Planner 的自然语言）".t()) },
+                    placeholder = { Text("看视频时优先打开 B 站，不要用抖音".t()) },
                 )
                 OutlinedTextField(
                     value = draft.value,
                     onValueChange = { onChange(draft.copy(value = it)) },
-                    label = { Text("结构化值（留空时取内容）") },
+                    label = { Text("结构化值（留空时取内容）".t()) },
                     placeholder = { Text("bilibili") },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = draft.subject,
                     onValueChange = { onChange(draft.copy(subject = it)) },
-                    label = { Text("主体 / 场景（地点、联系人、任务域，可留空）") },
-                    placeholder = { Text("公司 / 妈妈 / VIDEO") },
+                    label = { Text("主体 / 场景（地点、联系人、任务域，可留空）".t()) },
+                    placeholder = { Text("公司 / 妈妈 / VIDEO".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = draft.scope,
                     onValueChange = { onChange(draft.copy(scope = it)) },
-                    label = { Text("作用域包名（留空表示全局）") },
+                    label = { Text("作用域包名（留空表示全局）".t()) },
                     placeholder = { Text("com.sankuai.meituan") },
                     singleLine = true,
                 )
@@ -109,13 +110,13 @@ fun PreferenceEditorDialog(
                 }
             }
         },
-        confirmButton = { TextActionButton(text = "保存", onClick = onSave) },
+        confirmButton = { TextActionButton(text = "保存".t(), onClick = onSave) },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md)) {
                 onDelete?.let {
-                    TextActionButton(text = "删除", color = colors.error, onClick = it)
+                    TextActionButton(text = "删除".t(), color = colors.error, onClick = it)
                 }
-                TextActionButton(text = "取消", onClick = onCancel)
+                TextActionButton(text = "取消".t(), onClick = onCancel)
             }
         },
     )
@@ -126,12 +127,13 @@ fun PreferenceEditorDialog(
  * 参数：无（扩展函数）
  * 返回：界面与 prompt 共用的短标签
  */
+@Composable
 fun PreferenceCategory.label(): String = when (this) {
-    PreferenceCategory.PLATFORM -> "平台"
-    PreferenceCategory.MERCHANT -> "常点"
-    PreferenceCategory.TONE -> "语气"
-    PreferenceCategory.ORDER_STYLE -> "点餐方式"
-    PreferenceCategory.GENERAL -> "经验"
+    PreferenceCategory.PLATFORM -> "平台".t()
+    PreferenceCategory.MERCHANT -> "常点".t()
+    PreferenceCategory.TONE -> "语气".t()
+    PreferenceCategory.ORDER_STYLE -> "点餐方式".t()
+    PreferenceCategory.GENERAL -> "经验".t()
 }
 
 /**

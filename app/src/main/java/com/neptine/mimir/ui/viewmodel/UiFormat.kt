@@ -7,6 +7,11 @@ import com.neptine.mimir.core.contract.TaskBudget
 import com.neptine.mimir.core.contract.TaskState
 import com.neptine.mimir.data.db.entity.AuditEntity
 import com.neptine.mimir.data.db.entity.TaskEntity
+import com.neptine.mimir.ui.i18n.tStatic
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -97,7 +102,26 @@ data class AuditRow(
     val decideMs: Long = 0,
     /** 注入与判定段耗时（毫秒）。 */
     val actMs: Long = 0,
+    /** 模型自述的这一步摘要；旧记录或系统事件为空。 */
+    val summary: String? = null,
 )
+
+/**
+ * 功能：从模型原始输出里取 step_done 的 summary
+ * 参数：modelOutput 审计行里的模型输出 JSON
+ * 返回：摘要；没有 summary 或解析失败时为 null
+ *
+ * 历史页用它作为步骤标题：subGoal 往往只是"计算器"这类页面名，
+ * 真正说明"这一步做了什么"的是模型自己写的那句 summary。
+ */
+fun summaryOf(modelOutput: String): String? = runCatching {
+    SUMMARY_JSON.parseToJsonElement(modelOutput)
+        .jsonObject["summary"]
+        ?.jsonPrimitive
+        ?.contentOrNull
+}.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+
+private val SUMMARY_JSON = Json { ignoreUnknownKeys = true }
 
 /** 时间格式：月-日 时:分；跨天时也不会太长，审计列表能一屏放下。 */
 private val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
@@ -118,9 +142,9 @@ fun formatTime(millis: Long): String =
 fun formatElapsed(millis: Long): String {
     val seconds = (millis / 1000).coerceAtLeast(0)
     return when {
-        seconds < 60 -> "${seconds} 秒"
-        seconds < 3600 -> "${seconds / 60} 分 ${seconds % 60} 秒"
-        else -> "${seconds / 3600} 小时 ${seconds % 3600 / 60} 分"
+        seconds < 60 -> "%1\$d 秒".tStatic(seconds)
+        seconds < 3600 -> "%1\$d 分 %2\$d 秒".tStatic(seconds / 60, seconds % 60)
+        else -> "%1\$d 小时 %2\$d 分".tStatic(seconds / 3600, seconds % 3600 / 60)
     }
 }
 
@@ -217,6 +241,7 @@ fun AuditEntity.toRow(): AuditRow = AuditRow(
     decision = decision,
     reviewReason = reviewReason,
     verificationEvidence = verificationEvidence,
+    summary = summaryOf(modelOutput),
     imageTokens = imageTokens,
     screenshotBefore = screenshotBefore,
     screenshotAfter = screenshotAfter,

@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.viewmodel
 
+import com.neptine.mimir.ui.i18n.tStatic
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.neptine.mimir.core.contract.ScheduleRepeat
@@ -163,17 +164,17 @@ class ScheduledTaskViewModel @Inject constructor(
     fun saveDraft() {
         val draft = draftFlow.value ?: return
         if (draft.title.isBlank() || draft.inputText.isBlank()) {
-            errorFlow.value = "标题与任务内容不能为空"
+            errorFlow.value = "标题与任务内容不能为空".tStatic()
             return
         }
         val hour = draft.hourText.trim().toIntOrNull()
         val minute = draft.minuteText.trim().toIntOrNull()
         if (hour == null || hour !in 0..23 || minute == null || minute !in 0..59) {
-            errorFlow.value = "时间格式不对：小时 0–23，分钟 0–59"
+            errorFlow.value = "时间格式不对：小时 0–23，分钟 0–59".tStatic()
             return
         }
         if (draft.repeat == ScheduleRepeat.WEEKLY && draft.days.isEmpty()) {
-            errorFlow.value = "每周任务至少要选一天"
+            errorFlow.value = "每周任务至少要选一天".tStatic()
             return
         }
         viewModelScope.launch {
@@ -200,8 +201,8 @@ class ScheduledTaskViewModel @Inject constructor(
                 scheduler.schedule(task)
             }.onSuccess {
                 draftFlow.value = null
-                messageFlow.value = "已保存，下次触发 ${task.timeText}"
-            }.onFailure { errorFlow.value = it.message ?: "保存失败" }
+                messageFlow.value = "已保存，下次触发 %1\$s".tStatic(task.timeText)
+            }.onFailure { errorFlow.value = it.message ?: "保存失败".tStatic() }
         }
     }
 
@@ -241,7 +242,7 @@ class ScheduledTaskViewModel @Inject constructor(
         viewModelScope.launch {
             dao.delete(id)
             scheduler.cancel(id)
-            messageFlow.value = "已删除"
+            messageFlow.value = "已删除".tStatic()
         }
     }
 

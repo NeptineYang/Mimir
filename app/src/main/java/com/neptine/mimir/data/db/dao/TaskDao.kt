@@ -88,6 +88,22 @@ interface TaskDao {
     fun observeFinished(): Flow<List<TaskEntity>>
 
     /**
+     * 功能：观察某个时间点之后结束的任务
+     * 参数：since 起始时间戳（含）；0 表示不限
+     * 返回：按结束时间倒序的任务流
+     *
+     * 历史页的今天/本周/本月筛选走这一条，不在 UI 层过滤整表；
+     * 排序口径与 [observeFinished] 一致，老数据用 updated_at 兜底。
+     */
+    @Query(
+        "SELECT * FROM tasks WHERE state IN " +
+            "('DONE','DONE_READBACK','COMPLETED_UNVERIFIED','VERIFIED_BY_HUMAN','FAILED','ABORTED') " +
+            "AND COALESCE(finished_at, updated_at) >= :since " +
+            "ORDER BY COALESCE(finished_at, updated_at) DESC",
+    )
+    fun observeFinishedSince(since: Long): Flow<List<TaskEntity>>
+
+    /**
      * 功能：取出所有未进入终态的任务，用于进程重启后的恢复
      * 参数：无
      * 返回：按创建时间升序的任务列表

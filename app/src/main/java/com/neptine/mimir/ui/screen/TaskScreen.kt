@@ -1,5 +1,7 @@
 package com.neptine.mimir.ui.screen
 
+import com.neptine.mimir.ui.i18n.UiLanguageState
+import com.neptine.mimir.ui.i18n.t
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -100,6 +102,9 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
     // 从设置页回来时重新读一遍权限与模型配置，避免顶部状态停在旧结论
     LaunchedEffect(Unit) { viewModel.refreshStatus() }
 
+    // 切语言后重算引擎状态文案（ViewModel 里的字符串不会随重组自动更新）
+    LaunchedEffect(UiLanguageState.current) { viewModel.refreshStatus() }
+
     // 用户可能在系统设置里刚开完无障碍/授权，回到前台要立刻反映出来，
     // 否则页面还停在 OFFLINE，看起来像没生效（真机复验时踩到）。
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.refreshStatus() }
@@ -136,30 +141,30 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.canvas)
             .statusBarsPadding()
             .imePadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = MimirSpacing.page),
     ) {
         MimirPageHeader(
-            eyebrow = "MIMIR / 01",
-            title = "任务",
-            subtitle = "用一句话描述，剩下的交给 Mimir",
+            title = "任务".t(),
         )
 
         // 等宽标记只放 ASCII，中文说明单独一段：Space Mono 没有中文字形，
         // 混排并加字距会让这段字面明显散开，而且单行标签还会被省略号截断。
         //
-        // 离线时整行可点：Shizuku 授权/无障碍/模型配置三类缺项各有各的去处，
+        // 离线时右侧给独立按钮：Shizuku 授权/无障碍/模型配置三类缺项各有各的去处，
         // 只写一句「去设置页处理」等于让用户自己找。
+        val fixEngine = {
+            if (engine.fix == EngineFix.MODEL) onOpenSettings() else viewModel.fixEngine()
+        }
         Row(
             modifier = Modifier
+                .fillMaxWidth()
                 .padding(top = MimirSpacing.xs)
-                .clip(RoundedCornerShape(MimirRadius.sm))
-                .clickable(enabled = !engine.online) {
-                    if (engine.fix == EngineFix.MODEL) onOpenSettings() else viewModel.fixEngine()
-                },
+                // 整行可点与右侧按钮并存：文案里写着"点这里去启动"，
+                // 只让按钮可点会与这句话矛盾；两处触发同一个动作，点哪里都行。
+                .clickable(enabled = !engine.online, onClick = fixEngine),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm),
         ) {
@@ -171,11 +176,12 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
                 text = engine.detail,
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.muted,
+                modifier = Modifier.weight(1f),
             )
             if (!engine.online) {
-                Text(
-                    text = "去修复",
-                    style = MaterialTheme.typography.labelLarge,
+                TextActionButton(
+                    text = "去修复".t(),
+                    onClick = fixEngine,
                     color = colors.coral,
                 )
             }
@@ -189,7 +195,7 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
                 composer = it
                 viewModel.onInputChange(it.text)
             },
-            placeholder = "例如：在美团点一份黄焖鸡米饭，少辣",
+            placeholder = "例如：在美团点一份黄焖鸡米饭，少辣".t(),
             trailing = {
                 VoiceButton(
                     listening = voice.status == VoiceStatus.LISTENING,
@@ -231,7 +237,7 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
         val tasks = activeTasks
         if (tasks != null && tasks.isNotEmpty()) {
             SectionBlock(
-                title = "进行中",
+                title = "进行中".t(),
                 modifier = Modifier.padding(top = MimirSpacing.xl),
                 trailing = {
                     MonoLabel(text = "${tasks.size} ACTIVE", color = colors.muted)
@@ -257,7 +263,7 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
             shape = RoundedCornerShape(MimirRadius.lg),
             title = {
                 Text(
-                    text = if (row.state == TaskState.CREATED) "取消这条任务？" else "强制打断这条任务？",
+                    text = if (row.state == TaskState.CREATED) "取消这条任务？".t() else "强制打断这条任务？".t(),
                     style = MaterialTheme.typography.headlineSmall,
                     color = colors.ink,
                 )
@@ -265,9 +271,9 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
             text = {
                 Text(
                     text = if (row.state == TaskState.CREATED) {
-                        "「${row.inputText}」还在排队，尚未开始执行。取消后它会以「已放弃」进入历史页。"
+                        "「%1\$s」还在排队，尚未开始执行。取消后它会以「已放弃」进入历史页。".t(row.inputText)
                     } else {
-                        "「${row.inputText}」会立即停止，副屏会被销毁。已经提交给外部应用的操作不会回滚。"
+                        "「%1\$s」会立即停止，副屏会被销毁。已经提交给外部应用的操作不会回滚。".t(row.inputText)
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.slate,
@@ -275,7 +281,7 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
             },
             confirmButton = {
                 TextActionButton(
-                    text = if (row.state == TaskState.CREATED) "取消任务" else "强制打断",
+                    text = if (row.state == TaskState.CREATED) "取消任务".t() else "强制打断".t(),
                     color = colors.error,
                     onClick = {
                         viewModel.forceStop(row.taskId)
@@ -284,7 +290,7 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
                 )
             },
             dismissButton = {
-                TextActionButton(text = "返回", onClick = { pendingStop = null })
+                TextActionButton(text = "返回".t(), onClick = { pendingStop = null })
             },
         )
     }
@@ -319,7 +325,7 @@ private fun ActiveTaskRow(
             row.thumb?.let { thumb ->
                 Image(
                     bitmap = thumb,
-                    contentDescription = "当前页面",
+                    contentDescription = "当前页面".t(),
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .width(50.dp)
@@ -374,8 +380,13 @@ private fun ActiveTaskRow(
             modifier = Modifier.padding(top = MimirSpacing.sm),
         )
         Text(
-            text = "步 ${row.stepCount} / ${row.maxSteps} · 模型 ${row.budgetModelCalls} / ${row.maxModelCalls} · " +
-                "已用 ${formatElapsed(elapsed)}",
+            text = "步 %1\$d / %2\$d · 模型 %3\$d / %4\$d · 已用 %5\$s".t(
+                row.stepCount,
+                row.maxSteps,
+                row.budgetModelCalls,
+                row.maxModelCalls,
+                formatElapsed(elapsed),
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted,
             modifier = Modifier.padding(top = MimirSpacing.xs),
@@ -389,10 +400,10 @@ private fun ActiveTaskRow(
             // EXECUTING 也允许进接管页：查看档只读，可以实时看 agent 在副屏上干活。
             // 演示与排障都需要这个入口，不该只有挂起时才能看到执行画面。
             if (state == TaskState.NEED_HUMAN || state == TaskState.EXECUTING) {
-                TextActionButton(text = "接管", onClick = { onTakeover(row.taskId) })
+                TextActionButton(text = "接管".t(), onClick = { onTakeover(row.taskId) })
             }
             TextActionButton(
-                text = if (state == TaskState.CREATED) "取消" else "强制打断",
+                text = if (state == TaskState.CREATED) "取消".t() else "强制打断".t(),
                 color = colors.error,
                 onClick = { onForceStop(row) },
             )
@@ -457,13 +468,14 @@ private fun StepProgress(
  * 参数：row 任务展示模型
  * 返回：面向用户的一句话
  */
+@Composable
 private fun progressLine(row: TaskRow): String = when (row.state) {
-    TaskState.CREATED -> "排队中，等待执行"
-    TaskState.PLANNING -> "正在解析任务并生成计划"
-    TaskState.EXECUTING -> row.currentSubGoal?.let { "正在：$it" } ?: "执行中"
-    TaskState.NEED_HUMAN -> "等待你处理"
-    TaskState.RECONCILING -> "正在核对未决写入"
-    TaskState.VERIFYING -> "正在核验结果"
+    TaskState.CREATED -> "排队中，等待执行".t()
+    TaskState.PLANNING -> "正在解析任务并生成计划".t()
+    TaskState.EXECUTING -> row.currentSubGoal?.let { "正在：$it" } ?: "执行中".t()
+    TaskState.NEED_HUMAN -> "等待你处理".t()
+    TaskState.RECONCILING -> "正在核对未决写入".t()
+    TaskState.VERIFYING -> "正在核验结果".t()
     else -> row.rawState
 }
 
@@ -543,7 +555,7 @@ private fun SendButton(
 ) {
     val colors = LocalMimirColors.current
     Text(
-        text = "发送",
+        text = "发送".t(),
         style = MaterialTheme.typography.labelLarge,
         color = if (enabled) colors.onDark else colors.muted,
         modifier = Modifier
@@ -568,9 +580,9 @@ private fun VoiceHint(
 ) {
     val colors = LocalMimirColors.current
     val hint = when {
-        status == VoiceStatus.PREPARING -> "PREPARING · 正在加载端侧模型" to colors.muted
-        status == VoiceStatus.RECOGNIZING -> "识别中" to colors.muted
-        status == VoiceStatus.LISTENING -> "LISTENING · 松开结束" to colors.slate
+        status == VoiceStatus.PREPARING -> "PREPARING · 正在加载端侧模型".t() to colors.muted
+        status == VoiceStatus.RECOGNIZING -> "识别中".t() to colors.muted
+        status == VoiceStatus.LISTENING -> "LISTENING · 松开结束".t() to colors.slate
         message != null -> message to colors.coral
         else -> null
     } ?: return

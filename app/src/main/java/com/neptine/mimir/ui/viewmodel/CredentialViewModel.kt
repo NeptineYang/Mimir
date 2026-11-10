@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.viewmodel
 
+import com.neptine.mimir.ui.i18n.tStatic
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.neptine.mimir.core.contract.CredentialPurpose
@@ -85,15 +86,15 @@ class CredentialViewModel @Inject constructor(
         val pkg = packageName.trim()
         val alias = accountAlias.trim()
         if (pkg.isEmpty() || !pkg.contains('.')) {
-            _state.value = _state.value.copy(error = "包名要写成完整应用 ID，例如 com.example.app")
+            _state.value = _state.value.copy(error = "包名要写成完整应用 ID，例如 com.example.app".tStatic())
             return
         }
         if (alias.isEmpty()) {
-            _state.value = _state.value.copy(error = "账号别名不能为空")
+            _state.value = _state.value.copy(error = "账号别名不能为空".tStatic())
             return
         }
         if (secret.isEmpty()) {
-            _state.value = _state.value.copy(error = "密码不能为空")
+            _state.value = _state.value.copy(error = "密码不能为空".tStatic())
             return
         }
         runCatching {
@@ -108,10 +109,10 @@ class CredentialViewModel @Inject constructor(
                 secret,
             )
         }.onSuccess {
-            _state.value = _state.value.copy(error = null, message = "已保存；密码只存在 Keystore 加密存储中")
+            _state.value = _state.value.copy(error = null, message = "已保存；密码只存在 Keystore 加密存储中".tStatic())
             refresh()
         }.onFailure {
-            _state.value = _state.value.copy(error = "保存失败：${it.message ?: it::class.java.simpleName}")
+            _state.value = _state.value.copy(error = "保存失败：%1\$s".tStatic(it.message ?: it::class.java.simpleName))
         }
     }
 
@@ -123,11 +124,11 @@ class CredentialViewModel @Inject constructor(
     fun delete(id: String) {
         runCatching { store.delete(id) }
             .onSuccess {
-                _state.value = _state.value.copy(error = null, message = "已删除该凭据")
+                _state.value = _state.value.copy(error = null, message = "已删除该凭据".tStatic())
                 refresh()
             }
             .onFailure {
-                _state.value = _state.value.copy(error = "删除失败：${it.message ?: it::class.java.simpleName}")
+                _state.value = _state.value.copy(error = "删除失败：%1\$s".tStatic(it.message ?: it::class.java.simpleName))
             }
     }
 

@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.viewmodel
 
+import com.neptine.mimir.ui.i18n.tStatic
 import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -147,13 +148,13 @@ class MemoryViewModel @Inject constructor(
                     when (verdict) {
                         ReverifyVerdict.PASSED -> {
                             errorFlow.value = null
-                            messageFlow.value = "重验通过：$detail"
+                            messageFlow.value = "重验通过：%1\$s".tStatic(detail)
                         }
                         ReverifyVerdict.FAILED -> {
-                            errorFlow.value = "重验未通过，配方已转 STALE：$detail"
+                            errorFlow.value = "重验未通过，配方已转 STALE：%1\$s".tStatic(detail)
                         }
                         ReverifyVerdict.UNAVAILABLE -> {
-                            errorFlow.value = "无法核对：$detail"
+                            errorFlow.value = "无法核对：%1\$s".tStatic(detail)
                         }
                     }
                     reverifier.acknowledge()
@@ -283,7 +284,7 @@ class MemoryViewModel @Inject constructor(
     fun saveDraft() {
         val draft = draftFlow.value ?: return
         if (draft.title.isBlank() || draft.packageName.isBlank()) {
-            errorFlow.value = "标题与包名不能为空"
+            errorFlow.value = "标题与包名不能为空".tStatic()
             return
         }
         viewModelScope.launch {
@@ -320,9 +321,9 @@ class MemoryViewModel @Inject constructor(
             runCatching { persist(procedure) }
                 .onSuccess {
                     draftFlow.value = null
-                    messageFlow.value = "已保存「${procedure.title}」"
+                    messageFlow.value = "已保存「%1\$s」".tStatic(procedure.title)
                 }
-                .onFailure { errorFlow.value = it.message ?: "保存失败" }
+                .onFailure { errorFlow.value = it.message ?: "保存失败".tStatic() }
         }
     }
 
@@ -338,7 +339,7 @@ class MemoryViewModel @Inject constructor(
         viewModelScope.launch {
             val entity = memoryDao.findProcedure(id) ?: return@launch
             if (entity.status == MemoryStatus.STALE.name) {
-                errorFlow.value = "该配方已失效，请先立即重验；通过后会自动恢复启用"
+                errorFlow.value = "该配方已失效，请先立即重验；通过后会自动恢复启用".tStatic()
                 return@launch
             }
             val next = if (entity.status == MemoryStatus.ACTIVE.name) {
@@ -347,7 +348,7 @@ class MemoryViewModel @Inject constructor(
                 MemoryStatus.ACTIVE.name
             }
             memoryDao.upsertProcedure(entity.copy(status = next))
-            messageFlow.value = if (next == MemoryStatus.ACTIVE.name) "已启用" else "已停用"
+            messageFlow.value = if (next == MemoryStatus.ACTIVE.name) "已启用".tStatic() else "已停用".tStatic()
         }
     }
 
@@ -365,7 +366,7 @@ class MemoryViewModel @Inject constructor(
                 memoryDao.deleteActionsOf(id)
                 memoryDao.deletePagesOf(id)
             }
-            messageFlow.value = "已删除"
+            messageFlow.value = "已删除".tStatic()
         }
     }
 
@@ -430,7 +431,7 @@ class MemoryViewModel @Inject constructor(
     fun savePreferenceDraft() {
         val draft = preferenceDraftFlow.value ?: return
         if (draft.title.isBlank() || draft.content.isBlank()) {
-            errorFlow.value = "标题与内容不能为空"
+            errorFlow.value = "标题与内容不能为空".tStatic()
             return
         }
         viewModelScope.launch {
@@ -456,9 +457,9 @@ class MemoryViewModel @Inject constructor(
             runCatching { memoryDao.upsertPreference(ProcedureCodec.toEntity(preference)) }
                 .onSuccess {
                     preferenceDraftFlow.value = null
-                    messageFlow.value = "已保存偏好「${preference.title}」"
+                    messageFlow.value = "已保存偏好「%1\$s」".tStatic(preference.title)
                 }
-                .onFailure { errorFlow.value = it.message ?: "保存失败" }
+                .onFailure { errorFlow.value = it.message ?: "保存失败".tStatic() }
         }
     }
 
@@ -487,7 +488,7 @@ class MemoryViewModel @Inject constructor(
     fun deletePreference(id: String) {
         viewModelScope.launch {
             memoryDao.deletePreference(id)
-            messageFlow.value = "已删除"
+            messageFlow.value = "已删除".tStatic()
         }
     }
 
@@ -505,10 +506,10 @@ class MemoryViewModel @Inject constructor(
                 val text = ProcedureCodec.encodeBundle(procedures, preferences)
                 context.contentResolver.openOutputStream(uri)?.use { output ->
                     output.write(text.toByteArray())
-                } ?: error("无法写入所选文件")
+                } ?: error("无法写入所选文件".tStatic())
                 procedures.size + preferences.size
-            }.onSuccess { count -> messageFlow.value = "已导出 $count 条记忆（配方与偏好）" }
-                .onFailure { errorFlow.value = it.message ?: "导出失败" }
+            }.onSuccess { count -> messageFlow.value = "已导出 %1\$d 条记忆（配方与偏好）".tStatic(count) }
+                .onFailure { errorFlow.value = it.message ?: "导出失败".tStatic() }
         }
     }
 
@@ -523,9 +524,9 @@ class MemoryViewModel @Inject constructor(
                 val text = context.contentResolver.openInputStream(uri)
                     ?.bufferedReader()
                     ?.use { it.readText() }
-                    ?: error("无法读取所选文件")
+                    ?: error("无法读取所选文件".tStatic())
                 val bundle = ProcedureCodec.decodeBundle(text)
-                    ?: error("不是 Mimir 导出的记忆文件")
+                    ?: error("不是 Mimir 导出的记忆文件".tStatic())
                 // 逐条整树写入：导入文件里带的是 pages，旧文件只有 steps，
                 // ProcedureCodec 已在解码时按 pagePath 补好树。
                 bundle.procedures.forEach { persist(it) }
@@ -533,8 +534,8 @@ class MemoryViewModel @Inject constructor(
                     memoryDao.upsertPreference(ProcedureCodec.toEntity(it))
                 }
                 bundle.procedures.size + bundle.preferences.size
-            }.onSuccess { count -> messageFlow.value = "已导入 $count 条记忆（配方与偏好）" }
-                .onFailure { errorFlow.value = it.message ?: "导入失败" }
+            }.onSuccess { count -> messageFlow.value = "已导入 %1\$d 条记忆（配方与偏好）".tStatic(count) }
+                .onFailure { errorFlow.value = it.message ?: "导入失败".tStatic() }
         }
     }
 

@@ -1,9 +1,8 @@
 package com.neptine.mimir.ui.screen
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,83 +10,106 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.neptine.mimir.data.db.dao.AuditEventRow
 import com.neptine.mimir.ui.component.EmptyState
-import com.neptine.mimir.ui.component.KeyValueRow
 import com.neptine.mimir.ui.component.MimirListRow
 import com.neptine.mimir.ui.component.MimirPageHeader
 import com.neptine.mimir.ui.component.MonoLabel
+import com.neptine.mimir.ui.component.Pager
 import com.neptine.mimir.ui.component.RiskChip
 import com.neptine.mimir.ui.component.SectionBlock
 import com.neptine.mimir.ui.component.StatusChip
-import com.neptine.mimir.ui.component.TaskStateChip
 import com.neptine.mimir.ui.component.TextActionButton
+import com.neptine.mimir.ui.i18n.t
 import com.neptine.mimir.ui.theme.LocalMimirColors
-import com.neptine.mimir.ui.theme.MimirRadius
 import com.neptine.mimir.ui.theme.MimirSpacing
-import com.neptine.mimir.ui.viewmodel.AuditRow
-import com.neptine.mimir.ui.viewmodel.AuditUiState
-import com.neptine.mimir.ui.viewmodel.AuditViewModel
-import com.neptine.mimir.ui.viewmodel.TaskRow
-import com.neptine.mimir.ui.viewmodel.formatSeconds
+import com.neptine.mimir.ui.viewmodel.AuditEventsViewModel
+import com.neptine.mimir.ui.viewmodel.AuditFilter
 import com.neptine.mimir.ui.viewmodel.formatTime
-import java.util.Locale
+import com.neptine.mimir.ui.viewmodel.parseRiskLevel
 
 /**
- * 功能：审计页——选任务，或逐步回放某次任务的执行记录
- * 参数：onBack 返回上一页；onSelectTask 选中某个任务进行回放
+ * 功能：审计页——按"高危操作"列事件，而不是先选任务
+ * 参数：onOpenEvent 打开某条事件的证据；onOpenTaskReplay 进入"按任务回放"次入口
  * 返回：无
  *
- * 枚举字段（riskLevel / decision / outcome）一律原样显示，不翻译成更友好的措辞：
- * 这一页的价值是"可核对"，改写会破坏证据链。
+ * 两种看法的分工：
+ * - 这里回答"最近哪些操作需要人确认/被阻断、它们属于哪条任务"；
+ * - 完整的一条任务时间轴属于次入口，排障时才进去。
+ *
+ * 事件只显示摘要（目标、任务、步序、风险、处置），证据在详情里，
+ * 避免列表本身又被字段淹没。
  */
 @Composable
 fun AuditScreen(
-    onBack: () -> Unit,
-    onSelectTask: (String) -> Unit,
+    onOpenEvent: (Long) -> Unit,
+    onOpenTaskReplay: () -> Unit,
 ) {
-    val viewModel: AuditViewModel = hiltViewModel()
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val viewModel: AuditEventsViewModel = hiltViewModel()
+    val pageState by viewModel.pageState.collectAsStateWithLifecycle()
+    val selectedFilter by viewModel.selectedFilter.collectAsStateWithLifecycle()
     val colors = LocalMimirColors.current
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.canvas)
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = MimirSpacing.page),
     ) {
         MimirPageHeader(
-            eyebrow = "MIMIR / 03",
-            title = "审计",
-            subtitle = "每一步的输入、决策与结果",
+            title = "审计".t(),
             trailing = {
-                if (state is AuditUiState.Detail) {
-                    TextActionButton(text = "返回", onClick = onBack)
-                }
+                TextActionButton(text = "按任务回放".t(), onClick = onOpenTaskReplay)
             },
         )
 
-        when (val current = state) {
-            null -> Unit
-            is AuditUiState.Selecting -> SelectingContent(
-                tasks = current.tasks,
-                onSelectTask = onSelectTask,
-            )
-            is AuditUiState.Detail -> DetailContent(
-                detail = current,
-                onSelectStep = viewModel::selectStep,
-            )
+        AuditFilterRow(selected = selectedFilter, onSelect = viewModel::setFilter)
+
+        val current = pageState
+        when {
+            current == null -> Unit
+            current.total == 0 -> if (selectedFilter == AuditFilter.ALL) {
+                EmptyState(
+                    title = "还没有高危操作".t(),
+                    hint = "需要人确认、被阻断或失败的操作会出现在这里；每一条都能追溯到任务与证据。".t(),
+                )
+            } else {
+                EmptyState(
+                    title = "该筛选条件下没有事件".t(),
+                    hint = "换一个筛选条件，或查看全部。".t(),
+                    action = {
+                        TextActionButton(
+                            text = "查看全部".t(),
+                            onClick = { viewModel.setFilter(AuditFilter.ALL) },
+                        )
+                    },
+                )
+            }
+            else -> {
+                SectionBlock(
+                    title = "高危操作".t(),
+                    modifier = Modifier.padding(top = MimirSpacing.md),
+                    trailing = { MonoLabel(text = "${current.total} EVENTS", color = colors.muted) },
+                ) {
+                    current.rows.forEach { event ->
+                        AuditEventListRow(event = event, onOpen = onOpenEvent)
+                    }
+                }
+                Pager(
+                    page = current.page,
+                    pageCount = current.pageCount,
+                    onPrev = viewModel::goPrev,
+                    onNext = viewModel::goNext,
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(MimirSpacing.huge))
@@ -95,211 +117,94 @@ fun AuditScreen(
 }
 
 /**
- * 功能：渲染"选任务"态
- * 参数：tasks 全部任务；onSelectTask 选中回调
+ * 功能：渲染筛选条（全部 / 仅阻断 / 仅确认 / 仅失败）
+ * 参数：selected 当前口径；onSelect 选择回调
  * 返回：无
+ *
+ * 先筛后列：口径变化时由查询重新发流，不在界面层过滤列表——
+ * 否则"筛选后为空"与"本来就没有"在界面上分不清。
  */
 @Composable
-private fun SelectingContent(
-    tasks: List<TaskRow>,
-    onSelectTask: (String) -> Unit,
+private fun AuditFilterRow(
+    selected: AuditFilter,
+    onSelect: (AuditFilter) -> Unit,
 ) {
-    if (tasks.isEmpty()) {
-        EmptyState(
-            title = "还没有可审计的任务",
-            hint = "每次执行都会把每一步写进审计表。当前审计表为空，因为还没有任何任务进入执行。",
-        )
-        return
-    }
-    SectionBlock(title = "选择任务", modifier = Modifier.padding(top = MimirSpacing.md)) {
-        tasks.forEach { task ->
-            MimirListRow(
-                title = task.inputText,
-                meta = "${task.taskId.take(8)} · 步 ${task.stepCount} · ${formatTime(task.createdAt)}",
-                trailing = {
-                    val state = task.state
-                    if (state != null) {
-                        TaskStateChip(state = state)
-                    } else {
-                        StatusChip(text = task.rawState, fg = LocalMimirColors.current.slate)
-                    }
-                },
-                onClick = { onSelectTask(task.taskId) },
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = MimirSpacing.xs),
+        horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm),
+    ) {
+        AuditFilter.entries.forEach { filter ->
+            TextActionButton(
+                text = filter.label().t(),
+                onClick = { onSelect(filter) },
+                emphasis = filter == selected,
             )
         }
     }
 }
 
-/**
- * 功能：渲染"回放"态
- * 参数：detail 回放数据；onSelectStep 选中某一步
- * 返回：无
- */
-@Composable
-private fun DetailContent(
-    detail: AuditUiState.Detail,
-    onSelectStep: (Long?) -> Unit,
-) {
-    val colors = LocalMimirColors.current
-    val task = detail.task
-
-    SectionBlock(title = "任务", modifier = Modifier.padding(top = MimirSpacing.md)) {
-        if (task == null) {
-            Text(
-                text = "该任务记录已不存在，只保留审计步骤。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.slate,
-            )
-        } else {
-            KeyValueRow(key = "任务标识", value = task.taskId, mono = true)
-            KeyValueRow(key = "目标应用", value = task.packageName.ifBlank { "—（尚未解析）" })
-            KeyValueRow(key = "已完成步数", value = "${task.stepCount}")
-            KeyValueRow(key = "模型调用", value = "${task.budgetModelCalls}")
-            val timed = detail.steps.filter { it.totalMs > 0 }
-            if (timed.isEmpty()) {
-                KeyValueRow(key = "步耗时", value = "未留存（v6 之前的记录）")
-            } else {
-                KeyValueRow(
-                    key = "平均步耗时",
-                    value = "${formatSeconds(timed.sumOf { it.totalMs } / timed.size)} · ${timed.size} 步有计时",
-                )
-                KeyValueRow(
-                    key = "耗时构成",
-                    value = "观察 ${formatSeconds(timed.sumOf { it.observeMs } / timed.size)} · " +
-                        "模型 ${formatSeconds(timed.sumOf { it.decideMs } / timed.size)} · " +
-                        "注入判定 ${formatSeconds(timed.sumOf { it.actMs } / timed.size)}",
-                )
-            }
-        }
-    }
-
-    SectionBlock(title = "步骤", modifier = Modifier.padding(top = MimirSpacing.xxl)) {
-        if (detail.steps.isEmpty()) {
-            EmptyState(
-                title = "该任务还没有审计记录",
-                hint = "审计按步写入。没有记录通常意味着任务尚未进入执行阶段。",
-            )
-        } else {
-            detail.steps.forEach { step ->
-                StepRow(
-                    step = step,
-                    selected = step.id == detail.selected?.id,
-                    onClick = {
-                        onSelectStep(if (step.id == detail.selected?.id) null else step.id)
-                    },
-                )
-            }
-        }
-    }
-
-    detail.selected?.let { step ->
-        StepDetail(step = step)
-    }
+/** 功能：筛选口径的中文标签；参数：无；返回：展示用短标签。 */
+private fun AuditFilter.label(): String = when (this) {
+    AuditFilter.ALL -> "全部"
+    AuditFilter.BLOCKED -> "仅阻断"
+    AuditFilter.CONFIRM -> "仅确认"
+    AuditFilter.FAILED -> "仅失败"
 }
 
 /**
- * 功能：渲染时间轴上的一步
- * 参数：step 审计步骤；selected 是否选中；onClick 点击回调
+ * 功能：渲染一行审计事件
+ * 参数：event 事件投影；onOpen 打开详情回调
  * 返回：无
+ *
+ * 标题取"目标文本 → 子目标 → 动作类型"：用户记得的是"点了去结算"，
+ * 不是 "TAP"。任务原话放在第二行，保证每条事件都能追回来源。
  */
 @Composable
-private fun StepRow(
-    step: AuditRow,
-    selected: Boolean,
-    onClick: () -> Unit,
+private fun AuditEventListRow(
+    event: AuditEventRow,
+    onOpen: (Long) -> Unit,
 ) {
     val colors = LocalMimirColors.current
+    val risk = parseRiskLevel(event.riskLevel)
+    val title = event.targetText?.takeIf { it.isNotBlank() }
+        ?: event.subGoal.takeIf { it.isNotBlank() }
+        ?: event.actionKind
+
     MimirListRow(
-        title = step.actionKind,
+        title = title,
         leading = {
-            MonoLabel(
-                text = String.format(Locale.ROOT, "STEP %02d", step.stepIndex),
-                color = if (selected) colors.ink else colors.muted,
-            )
-        },
-        meta = "${formatTime(step.timestamp)} · displayGen ${step.displayGeneration}",
-        trailing = {
-            Column(
-                horizontalAlignment = androidx.compose.ui.Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(MimirSpacing.xs),
-            ) {
-                step.riskLevel?.let { RiskChip(level = it) }
-                Text(
-                    text = step.decision,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.slate,
-                )
+            if (risk != null) {
+                RiskChip(level = risk)
+            } else {
+                StatusChip(text = event.riskLevel, fg = colors.slate)
             }
         },
-        onClick = onClick,
+        note = event.taskTitle ?: event.taskId,
+        meta = "第 %1\$d 步 · %2\$s".t(event.stepIndex, formatTime(event.timestamp)),
+        trailing = {
+            StatusChip(text = event.decision, fg = decisionColor(event.decision))
+        },
+        onClick = { onOpen(event.id) },
     )
 }
 
 /**
- * 功能：渲染选中步骤的完整证据
- * 参数：step 选中的审计步骤
- * 返回：无
+ * 功能：把处置结论映射为强调色
+ * 参数：decision 处置结论
+ * 返回：chip 使用的颜色
+ *
+ * 颜色只做辅助，文字本身保留原始枚举，避免"颜色好看但读不出结论"。
  */
 @Composable
-private fun StepDetail(step: AuditRow) {
+private fun decisionColor(decision: String): Color {
     val colors = LocalMimirColors.current
-    SectionBlock(
-        title = "第 ${step.stepIndex} 步证据",
-        modifier = Modifier.padding(top = MimirSpacing.xxl),
-    ) {
-        KeyValueRow(key = "当前步骤", value = step.subGoal)
-        KeyValueRow(key = "动作类型", value = step.actionKind, mono = true)
-        KeyValueRow(key = "参数摘要", value = step.paramsDigest, mono = true)
-        KeyValueRow(
-            key = "系统返回",
-            value = when (step.systemReturnValue) {
-                true -> "true（仅代表系统接收）"
-                false -> "false（注入失败，可重试与否取决于幂等性）"
-                null -> "—"
-            },
-        )
-        KeyValueRow(key = "意图状态", value = step.intentStatus ?: "—", mono = true)
-        KeyValueRow(key = "动作结果", value = step.outcome ?: "—", mono = true)
-        KeyValueRow(key = "幂等分类", value = step.idempotency, mono = true)
-        KeyValueRow(key = "风险等级", value = step.riskLevel?.name ?: "—", mono = true)
-        KeyValueRow(key = "处置结论", value = step.decision, mono = true)
-        KeyValueRow(key = "复核理由", value = step.reviewReason ?: "—")
-        KeyValueRow(key = "目标文本", value = step.targetText ?: "—")
-        KeyValueRow(key = "目标指纹", value = step.targetFingerprint ?: "—", mono = true)
-        KeyValueRow(key = "授权标识", value = step.grantId ?: "—", mono = true)
-        KeyValueRow(key = "图像 token", value = "${step.imageTokens}", mono = true)
-        KeyValueRow(key = "验证证据", value = step.verificationEvidence ?: "—")
-        KeyValueRow(key = "前帧路径", value = step.screenshotBefore ?: "—", mono = true)
-        KeyValueRow(key = "后帧路径", value = step.screenshotAfter ?: "—", mono = true)
-
-        Text(
-            text = "模型输出",
-            style = MaterialTheme.typography.bodyMedium,
-            color = colors.slate,
-            modifier = Modifier.padding(top = MimirSpacing.md),
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = MimirSpacing.sm)
-                .clip(RoundedCornerShape(MimirRadius.xs))
-                .background(colors.softStone)
-                .horizontalScroll(rememberScrollState())
-                .padding(MimirSpacing.md),
-        ) {
-            Text(
-                text = step.modelOutput,
-                style = MaterialTheme.typography.labelMedium,
-                color = colors.ink,
-                softWrap = false,
-                maxLines = 1,
-            )
-        }
-        Text(
-            text = "截图预览需要图像加载组件，本轮不引入，因此只显示路径。",
-            style = MaterialTheme.typography.bodySmall,
-            color = colors.muted,
-            modifier = Modifier.padding(top = MimirSpacing.sm),
-        )
+    return when (decision) {
+        "ALLOW" -> colors.deepGreen
+        "CONFIRM" -> colors.coral
+        "BLOCK", "DENY" -> colors.error
+        "RETRY" -> colors.slate
+        else -> colors.slate
     }
 }

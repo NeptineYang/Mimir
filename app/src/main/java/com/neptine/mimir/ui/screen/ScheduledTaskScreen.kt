@@ -1,13 +1,14 @@
 package com.neptine.mimir.ui.screen
 
+import com.neptine.mimir.ui.i18n.t
 import android.app.AlarmManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -59,7 +60,7 @@ import com.neptine.mimir.ui.viewmodel.ScheduledTaskViewModel
  * 到点执行会点亮屏幕但保持锁屏；任务内容不在锁屏上显示。
  */
 @Composable
-fun ScheduledTaskScreen(onBack: () -> Unit) {
+fun ScheduledTaskScreen() {
     val viewModel: ScheduledTaskViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = LocalMimirColors.current
@@ -73,23 +74,13 @@ fun ScheduledTaskScreen(onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.canvas)
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = MimirSpacing.page),
     ) {
         MimirPageHeader(
-            eyebrow = "MIMIR / 06",
-            title = "定时任务",
-            subtitle = "到点自动执行；会点亮屏幕但保持锁屏，任务内容不显示在锁屏上",
+            title = "定时任务".t(),
         )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            TextActionButton(text = "← 返回", onClick = onBack)
-        }
 
         Notice(state = state, onDismiss = viewModel::dismissNotice)
 
@@ -99,13 +90,13 @@ fun ScheduledTaskScreen(onBack: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "精确闹钟未开启：任务可能晚几分钟触发。",
+                    text = "精确闹钟未开启：任务可能晚几分钟触发。".t(),
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.coral,
                     modifier = Modifier.weight(1f),
                 )
                 TextActionButton(
-                    text = "去开启",
+                    text = "去开启".t(),
                     onClick = {
                         runCatching {
                             context.startActivity(
@@ -121,10 +112,10 @@ fun ScheduledTaskScreen(onBack: () -> Unit) {
         }
 
         SectionBlock(
-            title = "已设定",
+            title = "已设定".t(),
             trailing = {
                 TextActionButton(
-                    text = "新增",
+                    text = "新增".t(),
                     emphasis = true,
                     onClick = viewModel::startCreate,
                 )
@@ -133,9 +124,9 @@ fun ScheduledTaskScreen(onBack: () -> Unit) {
             val tasks = state.tasks
             if (tasks != null && tasks.isEmpty()) {
                 EmptyState(
-                    title = "还没有定时任务",
-                    hint = "例如每天早上 8:30 打开 B 站看关注更新。" +
-                        "定时任务与手动任务走同一条执行链路，结果照常进历史与审计。",
+                    title = "还没有定时任务".t(),
+                    hint = "例如每天早上 8:30 打开 B 站看关注更新。".t() +
+                        "定时任务与手动任务走同一条执行链路，结果照常进历史与审计。".t(),
                 )
             }
             tasks.orEmpty().forEach { row ->
@@ -158,7 +149,7 @@ fun ScheduledTaskScreen(onBack: () -> Unit) {
             shape = RoundedCornerShape(MimirRadius.lg),
             title = {
                 Text(
-                    text = "删除这条定时任务？",
+                    text = "删除这条定时任务？".t(),
                     style = MaterialTheme.typography.headlineSmall,
                     color = colors.ink,
                 )
@@ -172,7 +163,7 @@ fun ScheduledTaskScreen(onBack: () -> Unit) {
             },
             confirmButton = {
                 TextActionButton(
-                    text = "删除",
+                    text = "删除".t(),
                     color = colors.error,
                     onClick = {
                         viewModel.delete(row.id)
@@ -181,7 +172,7 @@ fun ScheduledTaskScreen(onBack: () -> Unit) {
                 )
             },
             dismissButton = {
-                TextActionButton(text = "取消", onClick = { pendingDelete = null })
+                TextActionButton(text = "取消".t(), onClick = { pendingDelete = null })
             },
         )
     }
@@ -214,24 +205,24 @@ private fun ScheduledTaskListRow(
 ) {
     val colors = LocalMimirColors.current
     val status = when {
-        !row.enabled -> "已停用"
-        row.lastState == null -> "尚未执行"
+        !row.enabled -> "已停用".t()
+        row.lastState == null -> "尚未执行".t()
         else -> "上次 ${row.lastState}"
     }
     MimirListRow(
         title = row.title,
         meta = "${row.timeText} · ${row.repeatText} · $status" +
-            if (row.allowL2a) " · 预设授权 L2A" else "",
+            if (row.allowL2a) " · 预设授权 L2A".t() else "",
         note = row.inputText,
         onClick = onEdit,
         trailing = {
             Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md)) {
                 TextActionButton(
-                    text = if (row.enabled) "停用" else "启用",
+                    text = if (row.enabled) "停用".t() else "启用".t(),
                     onClick = onToggle,
                 )
                 TextActionButton(
-                    text = "删除",
+                    text = "删除".t(),
                     color = colors.error,
                     onClick = onDelete,
                 )
@@ -259,7 +250,7 @@ private fun ScheduledTaskEditor(
     val colors = LocalMimirColors.current
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text(text = if (draft.id == null) "新建定时任务" else "编辑定时任务") },
+        title = { Text(text = if (draft.id == null) "新建定时任务".t() else "编辑定时任务".t()) },
         text = {
             Column(
                 modifier = Modifier
@@ -270,15 +261,15 @@ private fun ScheduledTaskEditor(
                 OutlinedTextField(
                     value = draft.title,
                     onValueChange = { onChange(draft.copy(title = it)) },
-                    label = { Text("标题") },
-                    placeholder = { Text("早间看关注更新") },
+                    label = { Text("标题".t()) },
+                    placeholder = { Text("早间看关注更新".t()) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = draft.inputText,
                     onValueChange = { onChange(draft.copy(inputText = it)) },
-                    label = { Text("任务内容（交给 Agent 的原话）") },
-                    placeholder = { Text("打开 B 站看关注更新") },
+                    label = { Text("任务内容（交给 Agent 的原话）".t()) },
+                    placeholder = { Text("打开 B 站看关注更新".t()) },
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md),
@@ -287,7 +278,7 @@ private fun ScheduledTaskEditor(
                     OutlinedTextField(
                         value = draft.hourText,
                         onValueChange = { onChange(draft.copy(hourText = it)) },
-                        label = { Text("时") },
+                        label = { Text("时".t()) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f),
@@ -295,7 +286,7 @@ private fun ScheduledTaskEditor(
                     OutlinedTextField(
                         value = draft.minuteText,
                         onValueChange = { onChange(draft.copy(minuteText = it)) },
-                        label = { Text("分") },
+                        label = { Text("分".t()) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f),
@@ -303,7 +294,7 @@ private fun ScheduledTaskEditor(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "重复",
+                        text = "重复".t(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.slate,
                         modifier = Modifier.padding(end = MimirSpacing.md),
@@ -313,13 +304,20 @@ private fun ScheduledTaskEditor(
                         onClick = { onChange(draft.copy(repeat = draft.repeat.next())) },
                     )
                     Text(
-                        text = "点一下切换",
+                        text = "点一下切换".t(),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.slate,
                     )
                 }
                 if (draft.repeat == ScheduleRepeat.WEEKLY) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.xs)) {
+                    // 七个圆角按钮在一行里放不下（每个约 40dp，弹窗可用宽度只有 ~270dp），
+                    // 用 FlowRow 允许折行，免得最后一两天被裁掉。
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(MimirSpacing.xs),
+                        verticalArrangement = Arrangement.spacedBy(MimirSpacing.xs),
+                        // 一行 7 个会挤成 6+1 的孤儿行；固定 4 个一行，排成 4+3 更整齐
+                        maxItemsInEachRow = 4,
+                    ) {
                         (1..7).forEach { day ->
                             TextActionButton(
                                 text = dayName(day),
@@ -338,21 +336,21 @@ private fun ScheduledTaskEditor(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "需要确认的操作",
+                        text = "需要确认的操作".t(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.slate,
                         modifier = Modifier.padding(end = MimirSpacing.md),
                     )
                     TextActionButton(
-                        text = if (draft.allowL2a) "自动执行" else "到时挂起",
+                        text = if (draft.allowL2a) "自动执行".t() else "到时挂起".t(),
                         onClick = { onChange(draft.copy(allowL2a = !draft.allowL2a)) },
                     )
                 }
                 Text(
                     text = if (draft.allowL2a) {
-                        "到点后发送消息、加购等 L2A 操作会自动批准；支付、验证码、人脸仍会阻断。"
+                        "到点后发送消息、加购等 L2A 操作会自动批准；支付、验证码、人脸仍会阻断。".t()
                     } else {
-                        "到点后遇到需要确认的操作会挂起并通知你，任务不会继续。"
+                        "到点后遇到需要确认的操作会挂起并通知你，任务不会继续。".t()
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (draft.allowL2a) colors.coral else colors.slate,
@@ -366,13 +364,13 @@ private fun ScheduledTaskEditor(
                 }
             }
         },
-        confirmButton = { TextActionButton(text = "保存", onClick = onSave) },
+        confirmButton = { TextActionButton(text = "保存".t(), onClick = onSave, emphasis = true) },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md)) {
                 onDelete?.let {
-                    TextActionButton(text = "删除", color = colors.error, onClick = it)
+                    TextActionButton(text = "删除".t(), color = colors.error, onClick = it)
                 }
-                TextActionButton(text = "取消", onClick = onCancel)
+                TextActionButton(text = "取消".t(), onClick = onCancel)
             }
         },
     )
@@ -394,7 +392,7 @@ private fun Notice(state: ScheduledTaskUiState, onDismiss: () -> Unit) {
             color = if (state.error != null) colors.error else colors.ink,
             modifier = Modifier.weight(1f),
         )
-        TextActionButton(text = "关闭", onClick = onDismiss)
+        TextActionButton(text = "关闭".t(), onClick = onDismiss)
     }
 }
 
@@ -403,10 +401,11 @@ private fun Notice(state: ScheduledTaskUiState, onDismiss: () -> Unit) {
  * 参数：无（扩展函数）
  * 返回：短标签
  */
+@Composable
 private fun ScheduleRepeat.label(): String = when (this) {
-    ScheduleRepeat.ONCE -> "一次"
-    ScheduleRepeat.DAILY -> "每天"
-    ScheduleRepeat.WEEKLY -> "每周"
+    ScheduleRepeat.ONCE -> "一次".t()
+    ScheduleRepeat.DAILY -> "每天".t()
+    ScheduleRepeat.WEEKLY -> "每周".t()
 }
 
 /**
@@ -425,12 +424,13 @@ private fun ScheduleRepeat.next(): ScheduleRepeat = when (this) {
  * 参数：day 1–7
  * 返回：单字星期名
  */
+@Composable
 private fun dayName(day: Int): String = when (day) {
-    1 -> "一"
-    2 -> "二"
-    3 -> "三"
-    4 -> "四"
-    5 -> "五"
-    6 -> "六"
-    else -> "日"
+    1 -> "一".t()
+    2 -> "二".t()
+    3 -> "三".t()
+    4 -> "四".t()
+    5 -> "五".t()
+    6 -> "六".t()
+    else -> "日".t()
 }

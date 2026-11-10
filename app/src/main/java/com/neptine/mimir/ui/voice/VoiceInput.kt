@@ -1,5 +1,6 @@
 package com.neptine.mimir.ui.voice
 
+import com.neptine.mimir.ui.i18n.tStatic
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -112,7 +113,7 @@ class VoiceInputController internal constructor(
         message = null
         if (!hasPermission()) {
             status = VoiceStatus.DENIED
-            message = "需要麦克风权限才能语音输入"
+            message = "需要麦克风权限才能语音输入".tStatic()
             return
         }
         discard = false
@@ -134,7 +135,7 @@ class VoiceInputController internal constructor(
         if (!capturing) return
         if (SystemClock.elapsedRealtime() - startedAt < MIN_PRESS_MS) {
             discard = true
-            post { message = "按住说话，松开结束" }
+            post { message = "按住说话，松开结束".tStatic() }
         } else if (!discard) {
             post { status = VoiceStatus.RECOGNIZING }
         }
@@ -183,7 +184,7 @@ class VoiceInputController internal constructor(
         if (!OfflineAsrEngine.isLoaded() && OfflineAsrEngine.ensureLoaded(context) == null) {
             post {
                 status = VoiceStatus.UNAVAILABLE
-                message = "语音模型加载失败：${OfflineAsrEngine.lastError ?: "未知原因"}"
+                message = "语音模型加载失败：%1\$s".tStatic(OfflineAsrEngine.lastError ?: "未知原因".tStatic())
             }
             capturing = false
             return
@@ -193,7 +194,7 @@ class VoiceInputController internal constructor(
         if (record == null) {
             post {
                 status = VoiceStatus.IDLE
-                message = "无法打开麦克风"
+                message = "无法打开麦克风".tStatic()
             }
             capturing = false
             return
@@ -206,7 +207,7 @@ class VoiceInputController internal constructor(
             record.release()
             post {
                 status = VoiceStatus.IDLE
-                message = "模型已加载，请再按一次"
+                message = "模型已加载，请再按一次".tStatic()
             }
             return
         }
@@ -217,7 +218,7 @@ class VoiceInputController internal constructor(
             record.release()
             post {
                 status = VoiceStatus.UNAVAILABLE
-                message = "语音模型不可用"
+                message = "语音模型不可用".tStatic()
             }
             capturing = false
             return
@@ -226,7 +227,7 @@ class VoiceInputController internal constructor(
             pump(engine, record, stream)
             deliver(finish(engine, stream))
         } catch (t: Throwable) {
-            post { message = "录音失败：${t.message ?: t.javaClass.simpleName}" }
+            post { message = "录音失败：%1\$s".tStatic(t.message ?: t.javaClass.simpleName) }
         } finally {
             runCatching { record.stop() }
             record.release()
@@ -265,7 +266,7 @@ class VoiceInputController internal constructor(
             }
         }
         if (SystemClock.elapsedRealtime() - startedAt >= MAX_PRESS_MS) {
-            post { message = "已到 ${MAX_PRESS_MS / 1000} 秒上限，自动结束" }
+            post { message = "已到 %1\$d 秒上限，自动结束".tStatic(MAX_PRESS_MS / 1000) }
         }
         // 松手时音频缓冲里往往还剩最后几十毫秒：不喂进去，句尾那个字就被吞掉
         drain(engine, record, stream)
@@ -347,7 +348,7 @@ class VoiceInputController internal constructor(
     private fun deliver(text: String) {
         if (discard) return
         if (text.isEmpty()) {
-            post { message = "没有听清，请再说一次" }
+            post { message = "没有听清，请再说一次".tStatic() }
             return
         }
         post { onText(text) }

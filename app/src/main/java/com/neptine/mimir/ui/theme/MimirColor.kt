@@ -17,8 +17,10 @@ import com.neptine.mimir.core.contract.TaskState
  */
 @Immutable
 data class MimirColors(
-    /** 默认画布。 */
+    /** 默认画布（暖白纸色）。 */
     val canvas: Color,
+    /** 浮在画布上的浅色面：输入框、弹窗、卡片。 */
+    val surface: Color,
     /** 正文色。 */
     val ink: Color,
     /** 主 CTA 填充与品牌锚点。 */
@@ -63,23 +65,29 @@ data class MimirColors(
     val onDark: Color,
 )
 
-/** 浅色主题令牌实例；本项目 v1 只有浅色主题。 */
+/**
+ * 浅色主题令牌实例；本项目 v1 只有浅色主题。
+ *
+ * 画布取暖白纸色而不是纯白：Cohere 的页面底色是"印刷纸"，
+ * 细线与颗粒质感都建立在这层暖调上；纯白底会让 1 物理像素的分隔线显得发灰。
+ */
 val LightMimirColors = MimirColors(
-    canvas = Color(0xFFFFFFFF),
-    ink = Color(0xFF212121),
+    canvas = Color(0xFFFAF9F5),
+    surface = Color(0xFFFFFDF8),
+    ink = Color(0xFF1B1A17),
     primary = Color(0xFF17171C),
     black = Color(0xFF000000),
     deepGreen = Color(0xFF003C33),
     darkNavy = Color(0xFF071829),
-    softStone = Color(0xFFEEECE7),
-    paleGreen = Color(0xFFEDFCE9),
-    paleBlue = Color(0xFFF1F5FF),
-    hairline = Color(0xFFD9D9DD),
-    borderLight = Color(0xFFE5E7EB),
-    cardBorder = Color(0xFFF2F2F2),
-    muted = Color(0xFF93939F),
-    slate = Color(0xFF75758A),
-    bodyMuted = Color(0xFF616161),
+    softStone = Color(0xFFF0EDE4),
+    paleGreen = Color(0xFFEDF6EC),
+    paleBlue = Color(0xFFF1F4FA),
+    hairline = Color(0xFFE2DED3),
+    borderLight = Color(0xFFE6E2D8),
+    cardBorder = Color(0xFFEFEBE1),
+    muted = Color(0xFF8E8A7E),
+    slate = Color(0xFF6C685C),
+    bodyMuted = Color(0xFF55524A),
     actionBlue = Color(0xFF1863DC),
     focusBlue = Color(0xFF4C6EE6),
     coral = Color(0xFFFF7759),

@@ -9,6 +9,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.mutableStateOf
 import com.neptine.mimir.ui.MimirApp
+import com.neptine.mimir.ui.i18n.LanguagePrefs
+import com.neptine.mimir.ui.i18n.UiLanguageState
 import com.neptine.mimir.ui.theme.MimirTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -41,6 +43,8 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
+        // 在首帧之前恢复语言，避免先闪一下中文再切英文
+        UiLanguageState.current = LanguagePrefs.read(this)
         pendingTakeover.value = intent?.getStringExtra(EXTRA_TAKEOVER_TASK_ID)
         setContent {
             MimirTheme {

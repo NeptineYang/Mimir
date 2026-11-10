@@ -52,7 +52,7 @@ fun MimirComposer(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(color = colors.canvas, shape = shape)
+            .background(color = colors.surface, shape = shape)
             .border(width = 1.dp, color = colors.borderLight, shape = shape)
             .padding(MimirSpacing.lg),
     ) {
