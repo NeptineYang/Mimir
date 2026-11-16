@@ -123,6 +123,19 @@ def main() -> None:
 
     conn = sqlite3.connect(str(out_dir / "mimir.db"))
     print(f"数据库副本：{out_dir}")
+    print("数据库版本：user_version=" + str(conn.execute("pragma user_version").fetchone()[0]))
+
+    print_table(
+        conn,
+        "审计索引",
+        "select name from sqlite_master where type='index' and tbl_name='audit' order by name",
+    )
+    print_table(
+        conn,
+        "定时任务（scheduled_task）",
+        "select substr(id, 1, 8), title, hour, minute, repeat_kind, enabled, allow_l2a, "
+        "trigger_at, last_run_at, last_state from scheduled_task order by created_at",
+    )
 
     print_table(
         conn,

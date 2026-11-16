@@ -1,5 +1,6 @@
 package com.neptine.mimir.device.shizuku
 
+import com.neptine.mimir.device.shell.ShellSession
 import com.neptine.mimir.device.PackagePort
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -10,7 +11,7 @@ import kotlinx.coroutines.withContext
  * 跑在 shell 进程：shell uid 天然可枚举全部已装应用，
  * 不依赖 app 侧的 QUERY_ALL_PACKAGES 声明是否被 ROM 收紧。
  */
-class ShizukuPackagePort(private val shell: ShizukuShell) : PackagePort {
+class ShizukuPackagePort(private val shell: ShellSession) : PackagePort {
 
     /**
      * 功能：列出可启动的第三方应用包名

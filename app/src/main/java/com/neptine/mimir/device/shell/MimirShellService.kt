@@ -1,6 +1,7 @@
 package com.neptine.mimir.device.shell
 
 import android.content.Context
+import android.util.Log
 import androidx.annotation.Keep
 
 /**
@@ -80,9 +81,29 @@ class MimirShellService : IMimirShell.Stub() {
      * 功能：把目标 App 拉起并显示到指定副屏
      * 参数：packageName 目标包名；displayId 目标屏
      * 返回：启动意图是否已发出
+     *
+     * `started=false` 说明 intent 被现有实例接走（日志 "Activity not started"），
+     * 副屏拿不到新实例。此时清一次残留任务再重试：先清目标屏上的旧栈，没有就清屏外那份。
+     * 只在非主屏触发；主屏（display 0）用于结果页打开，绝不能清用户界面。
      */
-    override fun launchApp(packageName: String, displayId: Int): Boolean =
-        launcher.launch(packageName, displayId)
+    override fun launchApp(packageName: String, displayId: Int): Boolean {
+        if (launcher.launch(packageName, displayId)) return true
+        if (displayId == DISPLAY_MAIN) return false
+
+        val clearedOnDisplay = tasks.removeOnDisplay(packageName, displayId)
+        val clearedOutside = if (clearedOnDisplay) false else tasks.removeOutside(packageName, displayId)
+        if (!clearedOnDisplay && !clearedOutside) {
+            Log.w(TAG, "launchApp 未找到可清理的残留任务：$packageName display=$displayId")
+            return false
+        }
+        val retried = launcher.launch(packageName, displayId)
+        Log.i(
+            TAG,
+            "launchApp 自愈：清残留(onDisplay=$clearedOnDisplay outside=$clearedOutside) " +
+                "后重试 started=$retried pkg=$packageName display=$displayId",
+        )
+        return retried
+    }
 
     /**
      * 功能：按系统 Intent action 在指定副屏打开页面
@@ -99,6 +120,14 @@ class MimirShellService : IMimirShell.Stub() {
      */
     override fun removeTasksOutside(packageName: String, displayId: Int): Boolean =
         tasks.removeOutside(packageName, displayId)
+
+    /**
+     * 功能：清理目标包在指定显示内/外的全部任务
+     * 参数：packageName 目标包名；displayId 目标显示
+     * 返回：至少清掉一个任务为 true
+     */
+    override fun clearStaleTasks(packageName: String, displayId: Int): Boolean =
+        tasks.clearStale(packageName, displayId)
 
     /**
      * 功能：判断目标包是否在指定屏上存在任务
@@ -191,4 +220,26 @@ class MimirShellService : IMimirShell.Stub() {
      * 返回：输入法组件 id；读取失败为空串
      */
     override fun currentImeId(): String = ime.current()
+
+    /**
+     * 功能：让本进程退出
+     * 参数：无
+     * 返回：无
+     *
+     * 延迟 200ms 再杀：AIDL 调用方需要先拿到回包，否则它只能看到一个远程异常，
+     * 分不清"要求退出"与"进程崩了"。
+     */
+    override fun shutdown() {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }, 200)
+    }
+
+    private companion object {
+        /** 日志标签；与壳进程其它日志保持一致。 */
+        const val TAG = "MimirShell"
+
+        /** 主屏显示编号；主屏拉起不参与清场自愈。 */
+        const val DISPLAY_MAIN = 0
+    }
 }

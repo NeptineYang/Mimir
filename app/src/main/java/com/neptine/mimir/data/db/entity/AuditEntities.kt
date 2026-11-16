@@ -14,7 +14,12 @@ import androidx.room.PrimaryKey
  */
 @Entity(
     tableName = "audit",
-    indices = [Index(value = ["task_id", "step_idx"]), Index(value = ["ts"])],
+    indices = [
+        Index(value = ["task_id", "step_idx"]),
+        Index(value = ["ts"]),
+        // 审计页按风险等级/处置结论筛选、按时间倒序分页；这条索引专门服务事件流查询。
+        Index(value = ["risk_level", "decision", "ts"]),
+    ],
 )
 data class AuditEntity(
     /** 自增主键。 */

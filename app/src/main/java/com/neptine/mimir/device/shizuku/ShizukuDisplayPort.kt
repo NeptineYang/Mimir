@@ -1,5 +1,6 @@
 package com.neptine.mimir.device.shizuku
 
+import com.neptine.mimir.device.shell.ShellSession
 import com.neptine.mimir.core.contract.DisplayHandle
 import com.neptine.mimir.core.contract.DisplaySpec
 import com.neptine.mimir.core.contract.ImageFormat
@@ -17,7 +18,7 @@ import kotlinx.coroutines.withContext
  *
  * 所有方法都切到 IO 线程：AIDL 是同步 binder 调用，留在主线程会直接触发 ANR。
  */
-class ShizukuDisplayPort(private val shell: ShizukuShell) : DisplayPort {
+class ShizukuDisplayPort(private val shell: ShellSession) : DisplayPort {
 
     /** 本进程内的副屏代次；虚拟屏重建后递增，旧观察与旧授权随之失效。 */
     private val generation = AtomicLong(0)

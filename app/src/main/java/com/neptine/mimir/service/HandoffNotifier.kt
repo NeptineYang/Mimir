@@ -10,10 +10,10 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import com.neptine.mimir.MainActivity
-import com.neptine.mimir.R
 import com.neptine.mimir.core.contract.TaskState
 import com.neptine.mimir.device.ActiveDisplayRegistry
 import com.neptine.mimir.observation.ScreenshotProvider
+import com.neptine.mimir.ui.i18n.tStatic
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -57,7 +57,7 @@ class HandoffNotifier @Inject constructor(
      * 「继续一次」只对刚被拦下的那一步签发授权；页面或参数变化后授权自动失效。
      */
     suspend fun notifyConfirmation(taskId: String, summary: String) {
-        post(taskId, title = "需要确认一次", summary = summary, continueLabel = ACTION_CONTINUE_LABEL)
+        post(taskId, title = "需要确认一次".tStatic(), summary = summary, continueLabel = ACTION_CONTINUE_LABEL)
     }
 
     /**
@@ -68,7 +68,7 @@ class HandoffNotifier @Inject constructor(
      * 不提供「继续」：这两类情况都不允许 agent 自动续作。
      */
     suspend fun notifySelfOnly(taskId: String, summary: String) {
-        post(taskId, title = "需要你本人处理", summary = summary, continueLabel = null)
+        post(taskId, title = "需要你本人处理".tStatic(), summary = summary, continueLabel = null)
     }
 
     /**
@@ -79,7 +79,7 @@ class HandoffNotifier @Inject constructor(
      * 提供「继续」但不签发任何授权：用户排除原因后，agent 重新观测再决策。
      */
     suspend fun notifyResumable(taskId: String, summary: String) {
-        post(taskId, title = "任务已暂停", summary = summary, continueLabel = ACTION_RESUME_LABEL)
+        post(taskId, title = "任务已暂停".tStatic(), summary = summary, continueLabel = ACTION_RESUME_LABEL)
     }
 
     /**
@@ -103,17 +103,17 @@ class HandoffNotifier @Inject constructor(
 
         val body = listOfNotNull(
             reason?.takeIf(String::isNotEmpty),
-            "已执行 $steps 步",
+            "已执行 %1\$d 步".tStatic(steps),
             when (state) {
-                TaskState.DONE -> "已通过完成契约验证"
-                TaskState.DONE_READBACK -> "已通过同页重读复核（没有注册专用复验路线）"
-                TaskState.VERIFIED_BY_HUMAN -> "已由你核对确认"
-                TaskState.COMPLETED_UNVERIFIED -> "未复验，可手动打开 App 核对"
-                else -> "未形成可复验的完成结论"
+                TaskState.DONE -> "已通过完成契约验证".tStatic()
+                TaskState.DONE_READBACK -> "已通过同页重读复核（没有注册专用复验路线）".tStatic()
+                TaskState.VERIFIED_BY_HUMAN -> "已由你核对确认".tStatic()
+                TaskState.COMPLETED_UNVERIFIED -> "未复验，可手动打开 App 核对".tStatic()
+                else -> "未形成可复验的完成结论".tStatic()
             },
             // 结果页已经搬到主屏后台，点整条通知就能回到 Agent 停留的那一页
-            "点击通知直接打开结果页".takeIf { openResult },
-        ).joinToString("；")
+            "点击通知直接打开结果页".takeIf { openResult }?.tStatic(),
+        ).joinToString("；".tStatic())
 
         val notification = NotificationCompat.Builder(context, CHANNEL_RESULT_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
@@ -140,7 +140,7 @@ class HandoffNotifier @Inject constructor(
             // 不改写任何证据，只把终态标注成人工确认（记忆写入不受此影响）。
             notification.addAction(
                 android.R.drawable.checkbox_on_background,
-                "我已核对",
+                "我已核对".tStatic(),
                 actionIntent(taskId, HandoffReceiver.ACTION_HUMAN_VERIFIED, ACTION_VERIFIED_CODE),
             )
         }
@@ -166,12 +166,12 @@ class HandoffNotifier @Inject constructor(
      * 返回：标题文案
      */
     private fun resultTitle(state: TaskState): String = when (state) {
-        TaskState.DONE -> "任务已完成"
-        TaskState.DONE_READBACK -> "任务已完成（重读复核）"
-        TaskState.VERIFIED_BY_HUMAN -> "任务已完成（人工核对）"
-        TaskState.COMPLETED_UNVERIFIED -> "任务完成（未复验）"
-        TaskState.FAILED -> "任务失败"
-        else -> "任务已放弃"
+        TaskState.DONE -> "任务已完成".tStatic()
+        TaskState.DONE_READBACK -> "任务已完成（重读复核）".tStatic()
+        TaskState.VERIFIED_BY_HUMAN -> "任务已完成（人工核对）".tStatic()
+        TaskState.COMPLETED_UNVERIFIED -> "任务完成（未复验）".tStatic()
+        TaskState.FAILED -> "任务失败".tStatic()
+        else -> "任务已放弃".tStatic()
     }
 
     /**
@@ -326,12 +326,12 @@ class HandoffNotifier @Inject constructor(
     private fun ensureChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            context.getString(R.string.handoff_channel_name),
+            "需要你处理".tStatic(),
             // 交接通知是"agent 卡住了、需要人处理"，必须能打断用户：高优先级才会弹横幅。
             // 早期用 LOW 是怕打扰，但代价是用户根本注意不到任务停在那里。
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = context.getString(R.string.handoff_channel_description)
+            description = "任务被闸门拦下时在这里提示；会以横幅弹出并短促震动。".tStatic()
             setSound(null, null)
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 120, 120, 120)
@@ -355,10 +355,10 @@ class HandoffNotifier @Inject constructor(
     private fun ensureResultChannel() {
         val channel = NotificationChannel(
             CHANNEL_RESULT_ID,
-            context.getString(R.string.result_channel_name),
+            "任务结果".tStatic(),
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = context.getString(R.string.result_channel_description)
+            description = "任务完成、失败或放弃时在这里给出结果；会以横幅弹出，不出声也不震动。".tStatic()
             // 只用横幅提示，不出声也不震动：任务完成不该突然打断正在看手机的人。
             setSound(null, null)
             enableVibration(false)
@@ -413,13 +413,13 @@ class HandoffNotifier @Inject constructor(
         const val ACTION_OPEN_RESULT_CODE = 3300
 
         /** 「查看结果」按钮文案。 */
-        const val ACTION_OPEN_RESULT_LABEL = "查看结果"
+        val ACTION_OPEN_RESULT_LABEL: String get() = "查看结果".tStatic()
 
         /** 「在主屏打开」动作的请求码。 */
         const val ACTION_OPEN_MAIN_CODE = 3200
 
         /** 「在主屏打开」按钮文案。 */
-        const val ACTION_OPEN_MAIN_LABEL = "主屏打开"
+        val ACTION_OPEN_MAIN_LABEL: String get() = "主屏打开".tStatic()
 
         /** 交接通知渠道标识。 */
         // 渠道创建后属性不可修改（IMPORTANCE/VISIBILITY），改属性必须换 id 重建。
@@ -451,15 +451,15 @@ class HandoffNotifier @Inject constructor(
         const val ACTION_RESULT_CODE = 4
 
         /** 「继续一次」按钮文案。 */
-        const val ACTION_CONTINUE_LABEL = "继续一次"
+        val ACTION_CONTINUE_LABEL: String get() = "继续一次".tStatic()
 
         /** 可自行恢复的挂起用的「继续」按钮文案。 */
-        const val ACTION_RESUME_LABEL = "继续"
+        val ACTION_RESUME_LABEL: String get() = "继续".tStatic()
 
         /** 「放弃」按钮文案。 */
-        const val ACTION_ABORT_LABEL = "放弃"
+        val ACTION_ABORT_LABEL: String get() = "放弃".tStatic()
 
         /** 「我来处理」按钮文案。 */
-        const val ACTION_TAKEOVER_LABEL = "我来处理"
+        val ACTION_TAKEOVER_LABEL: String get() = "我来处理".tStatic()
     }
 }

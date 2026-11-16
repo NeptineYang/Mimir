@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /** 任务在列表里的展示模型；Composable 只吃它，不直接吃 Room 实体。 */
 data class TaskRow(
@@ -32,6 +33,8 @@ data class TaskRow(
     val currentSubGoal: String?,
     /** 挂起原因；仅 NEED_HUMAN 有值。 */
     val suspendReason: String?,
+    /** 终态后的结果总结（v0.3.4）；旧任务或生成中为空。 */
+    val summary: String?,
     /** 已执行步数。 */
     val stepCount: Int,
     /** 步数预算上限；用于展示进度分母。 */
@@ -149,6 +152,22 @@ fun formatElapsed(millis: Long): String {
 }
 
 /**
+ * 功能：把字节数格式化成便于阅读的短串
+ * 参数：bytes 字节数
+ * 返回：B / KB / MB 三档；MB 保留一位小数
+ *
+ * 固定用 Locale.US：界面语言是中文时也要显示 12.3，而不是 12,3。
+ */
+fun formatBytes(bytes: Long): String {
+    val safe = bytes.coerceAtLeast(0)
+    return when {
+        safe >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", safe / 1024.0 / 1024.0)
+        safe >= 1024L -> String.format(Locale.US, "%.0f KB", safe / 1024.0)
+        else -> "$safe B"
+    }
+}
+
+/**
  * 功能：安全解析任务状态
  * 参数：raw 库里的状态字符串
  * 返回：对应的枚举值；无法识别时为 null
@@ -181,6 +200,7 @@ fun TaskEntity.toRow(thumb: ImageBitmap? = null): TaskRow {
         packageName = packageName,
         currentSubGoal = currentSubGoal,
         suspendReason = suspendReason,
+        summary = summary,
         stepCount = stepCount,
         maxSteps = budget.maxSteps,
         budgetModelCalls = budgetModelCalls,

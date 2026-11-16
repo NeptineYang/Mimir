@@ -17,6 +17,16 @@ okhttp = "5.5.1"
 # 因此对齐到 Kotlin 2.2 系列发布的 1.9.0。
 serialization = "1.9.0"
 shizuku = "13.1.5"
+# 自建特权通道（0.3.5 起）：应用内无线调试配对。
+# BoringSSL 只给 SPAKE2 的 JNI 用（prefab 包，版本后缀的 ndk28 对应本机 NDK 28.2）；
+# Conscrypt 用于 TLS 的 exportKeyingMaterial——平台内置 Conscrypt 的同名方法是 @hide，
+# 用 Maven 版可以避开 hidden API 限制；BouncyCastle 只用于签发自签名的 adb 客户端证书。
+conscrypt = "2.5.3"
+bouncycastle = "1.81"
+boringssl = "20250114-lto-ndk28"
+# 裸 app_process 进程没有 AMS 的 app 记录，只能走 getContentProviderExternal；
+# 这套 hidden-API 封装与 Shizuku 用的是同一份（Apache-2.0）。
+rikkaHidden = "4.4.0"
 # hilt-navigation-compose 提供 hiltViewModel()；1.4.0 的传递依赖会向上提升到
 # lifecycle 2.11.0 / navigation 2.10.2 / hilt 2.60.1，与现有版本无降级冲突。
 hiltNavigationCompose = "1.4.0"
@@ -47,6 +57,11 @@ okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
 shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+conscrypt-android = { module = "org.conscrypt:conscrypt-android", version.ref = "conscrypt" }
+bouncycastle-bcpkix = { module = "org.bouncycastle:bcpkix-jdk15to18", version.ref = "bouncycastle" }
+boringssl-ndk = { module = "io.github.vvb2060.ndk:boringssl", version.ref = "boringssl" }
+rikka-hidden-compat = { module = "dev.rikka.hidden:compat", version.ref = "rikkaHidden" }
+rikka-hidden-stub = { module = "dev.rikka.hidden:stub", version.ref = "rikkaHidden" }
 androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
 mlkit-text-chinese = { module = "com.google.mlkit:text-recognition-chinese", version.ref = "mlkitTextChinese" }
 

@@ -83,6 +83,7 @@ class Orchestrator @Inject constructor(
     private val memoryWriter: MemoryWriter,
     private val resultReverifier: ResultReverifier,
     private val evidenceReviewer: EvidenceReviewer,
+    private val summaryWriter: TaskSummaryWriter,
     private val grants: GrantBroker,
     private val conditions: PostCondition,
     private val notifier: HandoffNotifier,
@@ -276,6 +277,7 @@ class Orchestrator @Inject constructor(
             activeDisplay.take()?.let { destroyDisplay(it) }
         }
         notifier.notifyResult(taskId, TaskState.ABORTED, null, task.budgetStepsUsed)
+        summaryWriter.schedule(taskId)
     }
 
     /**
@@ -1524,7 +1526,13 @@ class Orchestrator @Inject constructor(
         decision: DecideResult,
         digest: String,
     ): StepResult? {
-        if (session.packageEscapes >= MAX_PACKAGE_ESCAPES) return null
+        // 两级阶梯都用尽才判死：先按返回（对方可能是可退的子页面），
+        // 再重新拉起目标（把对方压回后面）。两个计数分开，避免互相吃掉额度。
+        if (session.packageEscapes >= MAX_PACKAGE_ESCAPES &&
+            session.packageRelaunches >= MAX_PACKAGE_RELAUNCHES
+        ) {
+            return null
+        }
         val escaped = snapshot.packageName
         var actual = escaped
         var applied = false
@@ -1541,16 +1549,34 @@ class Orchestrator @Inject constructor(
             session.packageEscapes++
             actual = awaitForeground(session.handle, session.spec.packageName) ?: actual
         }
+
+        // 第二级：按返回无效说明对方不是可退的子页面（系统推荐位、被拉起的另一个 App 的
+        // 独立任务栈）。重新拉起目标即可把它压回后面，全程不碰对方的界面。
+        var relaunched = false
+        if (!PackageScope.isWithin(session.spec.packageName, actual) &&
+            session.packageRelaunches < MAX_PACKAGE_RELAUNCHES
+        ) {
+            relaunched = runCatching {
+                transport.activities.launch(session.spec.packageName, session.handle)
+            }.isSuccess
+            session.packageRelaunches++
+            if (relaunched) {
+                actual = awaitForeground(session.handle, session.spec.packageName) ?: actual
+            }
+        }
         val restored = PackageScope.isWithin(session.spec.packageName, actual)
 
         recordAudit(
             task.taskId, stepIndex + 1, snapshot, action, decision, verdict = null,
             outcome = if (restored) "PACKAGE_RECOVERED" else "PACKAGE_ESCAPED",
             digest = digest,
-            result = if (restored) {
-                "前台离开目标包（$escaped），按返回自愈成功（系统接受=$applied，已按 ${session.packageEscapes} 次），当前 $actual"
-            } else {
-                "前台离开目标包（$escaped），按返回 ${session.packageEscapes} 次后仍停在 $actual（系统接受=$applied）"
+            result = when {
+                !restored ->
+                    "前台离开目标包（$escaped），按返回 ${session.packageEscapes} 次、重新拉起（接受=$relaunched）后仍停在 $actual"
+                relaunched ->
+                    "前台被 $escaped 的独立页面占用，按返回无效；重新拉起目标后恢复（页面已回到起始页，需要重新定位）"
+                else ->
+                    "前台离开目标包（$escaped），按返回自愈成功（系统接受=$applied，已按 ${session.packageEscapes} 次），当前 $actual"
             },
             decisionOverride = if (restored) "ALLOW" else "NEED_HUMAN",
         )
@@ -1778,6 +1804,8 @@ class Orchestrator @Inject constructor(
         val terminal = terminalReason(session.spec, target, summary, result)
         val verified = transition(verifying, target, terminal)
         session.task = verified
+        // 终态之后补写结果总结；写失败不影响终态，异步作用域里自己兜底
+        if (target.isTerminal) summaryWriter.schedule(verified.taskId)
 
         // 查看类/购物类任务的交付物都是"agent 停下的那一页"：视频页、对话页、购物车、
         // 待支付页。副屏先留着，等用户点结果通知时再把整个任务搬到主屏。
@@ -2073,6 +2101,8 @@ class Orchestrator @Inject constructor(
         val current = runCatching { TaskState.valueOf(task.state) }.getOrNull() ?: return
         if (current != TaskState.COMPLETED_UNVERIFIED) return
         val verified = runCatching { transition(task, TaskState.VERIFIED_BY_HUMAN) }.getOrNull() ?: return
+        // 人工核对不改写总结；若之前生成失败导致为空，这里补一次
+        summaryWriter.schedule(taskId)
         audit.recordSystemEvent(
             task = verified,
             outcome = "HUMAN_VERIFIED",
@@ -2122,6 +2152,7 @@ class Orchestrator @Inject constructor(
             ),
         )
         notifier.notifyResult(task.taskId, TaskState.FAILED, reason, task.budgetStepsUsed)
+        summaryWriter.schedule(task.taskId)
     }
 
     /**
@@ -2180,9 +2211,25 @@ class Orchestrator @Inject constructor(
      * 否则会把刚拉起来的实例一起清掉。
      */
     private suspend fun recoverToDisplay(handle: DisplayHandle, spec: TaskSpec): Boolean {
-        val launched = runCatching { transport.activities.launch(spec.packageName, handle) }.isSuccess
-        transport.activities.removeTasksOutside(spec.packageName, handle)
-        if (!launched) return false
+        val firstLaunched = runCatching {
+            transport.activities.launch(spec.packageName, handle)
+        }.isSuccess
+        if (firstLaunched && awaitOnDisplay(handle, spec)) return true
+
+        // started=true 也可能没有窗口：已销毁屏上的活动被系统迁到新屏，am start 会把 intent
+        // 交给这个看不见的旧活动。awaitOnDisplay 失败后必须清一次再重拉，不能只认 launched。
+        val cleared = runCatching {
+            transport.activities.clearStaleTasks(spec.packageName, handle)
+        }.getOrDefault(false)
+        val relaunched = runCatching {
+            transport.activities.launch(spec.packageName, handle)
+        }.isSuccess
+        Log.d(
+            AGENT_TAG,
+            "recoverToDisplay display=${handle.displayId} firstLaunched=$firstLaunched " +
+                "cleared=$cleared relaunched=$relaunched",
+        )
+        if (!relaunched) return false
         return awaitOnDisplay(handle, spec)
     }
 
@@ -3107,6 +3154,7 @@ class Orchestrator @Inject constructor(
         var stepRejections: Int = 0,
         var stepMemoryIds: List<String> = emptyList(),
         var packageEscapes: Int = 0,
+        var packageRelaunches: Int = 0,
         var overlaySeen: Boolean = false,
         var overlayDismissals: Int = 0,
         var visionWaits: Int = 0,
@@ -3135,6 +3183,7 @@ class Orchestrator @Inject constructor(
             stepRejections = stepRejections,
             stepMemoryIds = stepMemoryIds,
             packageEscapes = packageEscapes,
+            packageRelaunches = packageRelaunches,
             planVersion = plan.version,
             subtaskIndex = cursor.subtaskIndex,
             stepIndex = cursor.stepIndex,
@@ -3153,6 +3202,7 @@ class Orchestrator @Inject constructor(
         fun restoreState(stored: SessionState) {
             replans = stored.replans
             packageEscapes = stored.packageEscapes
+            packageRelaunches = stored.packageRelaunches
             // 遮挡是任务级事实：即使续跑换了步骤，也不能因为"换了一步"就允许把遮挡路径写进记忆
             overlaySeen = stored.overlaySeen
             overlayDismissals = stored.overlayDismissals
@@ -3304,6 +3354,9 @@ class Orchestrator @Inject constructor(
 
         /** 同一任务最多为"前台离开目标包"按几次返回；用尽后越界直接转人工。 */
         const val MAX_PACKAGE_ESCAPES = 2
+
+        /** "重新拉起目标"自愈次数上限：一次就够，多了会把用户的页面状态反复重置。 */
+        const val MAX_PACKAGE_RELAUNCHES = 1
 
         /** 每次按返回后等前台包名变化的最多轮询次数与间隔。 */
         const val PACKAGE_RECOVERY_ATTEMPTS = 6

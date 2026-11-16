@@ -1,5 +1,6 @@
 package com.neptine.mimir.device.shizuku
 
+import com.neptine.mimir.device.shell.ShellSession
 import android.view.accessibility.AccessibilityWindowInfo
 import com.neptine.mimir.core.contract.DisplayHandle
 import com.neptine.mimir.core.contract.ForegroundApp
@@ -14,7 +15,7 @@ import kotlinx.coroutines.withContext
  * 拉起走 ActivityOptions.launchDisplayId；校验必须走无障碍窗口，因为
  * "启动意图"不等于"真的在那个屏上"——App 可能自己拒绝多屏或在主屏兜底。
  */
-class ShizukuActivityPort(private val shell: ShizukuShell) : ActivityPort {
+class ShizukuActivityPort(private val shell: ShellSession) : ActivityPort {
 
     private companion object {
         /** 主屏 displayId：am start 传入 0 即可落在默认显示。 */
@@ -96,6 +97,12 @@ class ShizukuActivityPort(private val shell: ShizukuShell) : ActivityPort {
      * 参数：packageName 目标包名；handle 建屏句柄
      * 返回：任务存在为 true；shell 不可用时为 false
      */
+    override suspend fun clearStaleTasks(packageName: String, handle: DisplayHandle): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching { shell.require().clearStaleTasks(packageName, handle.displayId) }
+                .getOrDefault(false)
+        }
+
     override suspend fun hasTaskOnDisplay(packageName: String, handle: DisplayHandle): Boolean =
         withContext(Dispatchers.IO) {
             runCatching { shell.require().hasTaskOnDisplay(packageName, handle.displayId) }

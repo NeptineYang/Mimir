@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.IBinder
 import com.neptine.mimir.device.shell.IMimirShell
 import com.neptine.mimir.device.shell.MimirShellService
+import com.neptine.mimir.device.shell.ShellSession
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -23,7 +24,7 @@ import kotlin.coroutines.resumeWithException
  * 建屏、取帧、注入、拉起 App 全部跑在 shell uid 的 [MimirShellService] 里；
  * 本类只负责把那条 binder 拿到并缓存，断连后清空以便下次重绑。
  */
-class ShizukuShell(private val context: Context) {
+class ShizukuShell(private val context: Context) : ShellSession {
 
     /**
      * 单次绑定的等待上限。
@@ -43,7 +44,7 @@ class ShizukuShell(private val context: Context) {
      * 参数：无
      * 返回：两者都就绪为 true
      */
-    fun isReady(): Boolean {
+    override fun isReady(): Boolean {
         if (!Shizuku.pingBinder()) return false
         return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
     }
@@ -53,7 +54,7 @@ class ShizukuShell(private val context: Context) {
      * 参数：无
      * 返回：可用的服务代理；Shizuku 未就绪或绑定超时时抛异常
      */
-    suspend fun require(): IMimirShell {
+    override suspend fun require(): IMimirShell {
         cached?.let { return it }
         return mutex.withLock {
             cached ?: bind().also { cached = it }
@@ -145,11 +146,12 @@ class ShizukuShell(private val context: Context) {
         /**
          * UserService 版本；服务实现变更时递增，用于让 Shizuku 重建进程。
          *
+         * 25：AIDL 增加 shutdown()（自建通道也要用它做并发仲裁）；
          * 24：回收遗留副屏前先结束同包的旧 shell 进程（装包后会残留）；
          * 23：新增遗留副屏回收（reapDisplays）；22：置顶成功返回码补上
          * START_TASK_TO_FRONT(2)；21：置顶增加 am start + REORDER_TO_FRONT 兜底；
          * 20：剪贴板走 IClipboard 显式 callingPackage。
          */
-        const val USER_SERVICE_VERSION = 24
+        const val USER_SERVICE_VERSION = 25
     }
 }

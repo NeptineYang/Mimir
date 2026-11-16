@@ -141,9 +141,9 @@ object TaskSpecCodec {
      * 返回：TaskBudget
      */
     private fun decodeBudget(node: JsonObject) = TaskBudget(
-        maxSteps = node["maxSteps"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 40,
-        maxDurationMs = node["maxDurationMs"]?.jsonPrimitive?.longOrNull ?: 10 * 60 * 1000L,
-        maxModelCalls = node["maxModelCalls"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 60,
+        maxSteps = node["maxSteps"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 60,
+        maxDurationMs = node["maxDurationMs"]?.jsonPrimitive?.longOrNull ?: 45 * 60 * 1000L,
+        maxModelCalls = node["maxModelCalls"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 90,
         maxStepDurationMs = node["maxStepDurationMs"]?.jsonPrimitive?.longOrNull ?: 120_000L,
     )
 

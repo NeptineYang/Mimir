@@ -40,6 +40,8 @@ object DatabaseModule {
                 MimirDatabase.MIGRATION_6_7,
                 MimirDatabase.MIGRATION_7_8,
                 MimirDatabase.MIGRATION_8_9,
+                MimirDatabase.MIGRATION_9_10,
+                MimirDatabase.MIGRATION_10_11,
             )
             .build()
 

@@ -342,6 +342,65 @@ internal val EnglishText: Map<String, String> = mapOf(
     "完成提醒" to "Completion banner",
     "任务结束时把通知横幅弹到主屏（含锁屏）；需要系统里开启「任务结果」渠道的悬浮通知。" to
         "Pops the banner on the main screen (including the lock screen) when a task ends; the “Task results” channel must allow floating notifications.",
+    "特权服务" to "Privileged service",
+    "没连 Wi-Fi" to "No Wi-Fi",
+    "无线调试未打开" to "Wireless debugging off",
+    "还没配对" to "Not paired yet",
+    "服务未启动" to "Service not started",
+    "正在启动" to "Starting",
+    "已就绪" to "Ready",
+    "服务已断开" to "Service disconnected",
+    "无线调试需要先连一个 Wi-Fi（或以太网）。" to
+        "Wireless debugging needs a Wi-Fi or Ethernet connection.",
+    "在开发者选项里打开「无线调试」。" to "Turn on “Wireless debugging” in Developer options.",
+    "在「无线调试 → 使用配对码配对设备」里取码，再到通知栏回复。" to
+        "Get the code in “Wireless debugging → Pair device with pairing code”, then reply from the notification shade.",
+    "已配对，回到这里会自动启动服务。" to "Paired. The service starts automatically when you come back.",
+    "正在拉起特权进程，请稍候。" to "Bringing up the privileged process…",
+    "设备层已可用，可以下发任务。" to "The device layer is ready; you can start a task.",
+    "服务被系统回收了；确认省电策略为「无限制」后会自动重连。" to
+        "The system reclaimed the service. Set battery saver to “No restrictions” and it will reconnect.",
+    "去处理" to "Fix",
+    "重新配对" to "Pair again",
+    "启用特权服务" to "Enable privileged service",
+    "特权服务未就绪：%1\$s，点这里启动" to "Privileged service not ready: %1\$s. Tap to start.",
+    "先完成配对" to "Pair first",
+    "特权服务（实验）" to "Privileged service (experimental)",
+    "未配对" to "Not paired",
+    "已配对" to "Paired",
+    "配对中…" to "Pairing…",
+    "配对无线调试" to "Pair wireless debugging",
+    "清除密钥" to "Clear key",
+    "输入配对码" to "Enter pairing code",
+    "配对码" to "Pairing code",
+    "已清除配对密钥" to "Pairing key cleared",
+    "在系统「开发者选项 → 无线调试」里点「使用配对码配对设备」，把 6 位码填进来。配对一次即可，之后重启手机只需重新打开无线调试。" to
+        "In Developer options → Wireless debugging, tap “Pair device with pairing code” and enter the 6-digit code here. Pairing once is enough; after a reboot you only need to re-enable wireless debugging.",
+    "没发现配对端口：请确认系统「使用配对码配对设备」对话框还开着，并保持 Wi-Fi 连接。" to
+        "No pairing port found: keep the system pairing dialog open and stay on Wi-Fi.",
+    "配对码错误或已过期" to "Pairing code is wrong or expired",
+    "配对失败：%1\$s" to "Pairing failed: %1\$s",
+    "配对成功，但没发现连接端口：请重新打开一次无线调试。" to
+        "Paired, but no connect port was found: toggle wireless debugging once.",
+    "已配对，但 shell 不可用：%1\$s" to "Paired, but the shell is unavailable: %1\$s",
+    "在系统「开发者选项 → 无线调试」里点「使用配对码配对设备」，再点下面的按钮，下拉通知栏把 6 位码回复进去。全过程不需要切回 Mimir。" to
+        "In Developer options → Wireless debugging tap “Pair device with pairing code”, then tap the button below and reply with the 6-digit code from the notification shade. You never need to switch back to Mimir.",
+    "在系统「使用配对码配对设备」里读出 6 位数字，在下面回复即可。不用切回 Mimir。" to
+        "Read the 6-digit code from the system pairing dialog and reply with it below. No need to switch back to Mimir.",
+    "正在配对…" to "Pairing…",
+    "正在发现配对端口并握手，请稍候。" to "Discovering the pairing port and handshaking…",
+    "配对成功" to "Paired",
+    "配对失败" to "Pairing failed",
+    "启动特权服务" to "Start privileged service",
+    "服务：%1\$s" to "Service: %1\$s",
+    "运行中" to "Running",
+    "未启动" to "Not started",
+    "启动中…" to "Starting…",
+    "先完成配对" to "Pair first",
+    "以后打开 Mimir 会自动连接，不需要再输配对码。" to
+        "Mimir will reconnect automatically next time; no pairing code needed.",
+    "通知权限未开启，配对码没有地方输入；请先允许 Mimir 发送通知。" to
+        "Notifications are off, so there is nowhere to type the pairing code. Allow notifications for Mimir first.",
     "读取中" to "Loading",
     "尚未配置" to "Not configured",
     "模型后端" to "Model backend",
@@ -541,4 +600,63 @@ internal val EnglishText: Map<String, String> = mapOf(
     "启动" to "Launch",
     "等待" to "Wait",
     "使用凭据" to "Use credential",
+
+    // ---------- 存储与清理 ----------
+    "存储" to "Storage",
+    "审计截图" to "Audit screenshots",
+    "%1\$s · %2\$d 个文件" to "%1\$s · %2\$d files",
+    "自动清理" to "Auto cleanup",
+    "超过 30 天的截图自动删除，总量上限 300 MB。" to
+        "Screenshots older than 30 days are deleted automatically; total size is capped at 300 MB.",
+    "保留范围" to "Preserved",
+    "进行中的任务不受影响。" to "Running tasks are not affected.",
+    "清理截图" to "Clear screenshots",
+    "清理中" to "Clearing",
+    "清理审计截图" to "Clear audit screenshots",
+    "将删除已结束任务的全部审计截图，进行中的任务保留。" to
+        "This deletes all audit screenshots for finished tasks. Running tasks are preserved.",
+    "清理" to "Clear",
+    "没有可清理的截图" to "Nothing to clear",
+    "已清理 %1\$s" to "Cleared %1\$s",
+
+    // ---------- 任务总结与本次运行 ----------
+    "结果总结" to "Result summary",
+    "本次运行" to "This session",
+    "重启应用后清空；长期记录在历史页。" to
+        "Cleared when the app restarts; long-term records live in History.",
+
+    // ---------- 通知（交接 / 结果 / 特权） ----------
+    "；" to "; ",
+    "需要确认一次" to "Needs your confirmation",
+    "需要你本人处理" to "Requires you in person",
+    "任务已暂停" to "Task paused",
+    "任务已完成" to "Task completed",
+    "任务已完成（重读复核）" to "Task completed (re-read verified)",
+    "任务已完成（人工核对）" to "Task completed (checked by you)",
+    "任务完成（未复验）" to "Task completed (unverified)",
+    "任务失败" to "Task failed",
+    "任务已放弃" to "Task abandoned",
+    "已执行 %1\$d 步" to "%1\$d steps executed",
+    "已通过完成契约验证" to "Completion contract verified",
+    "已通过同页重读复核（没有注册专用复验路线）" to
+        "Verified by same-page re-read (no dedicated verification route)",
+    "已由你核对确认" to "Confirmed by you",
+    "未复验，可手动打开 App 核对" to "Not verified; open the app to check",
+    "未形成可复验的完成结论" to "No verifiable completion result",
+    "点击通知直接打开结果页" to "Tap to open the result page",
+    "主屏打开" to "Open on main screen",
+    "我来处理" to "I'll handle it",
+    "我已核对" to "I've checked",
+    "需要你处理" to "Needs your attention",
+    "任务结果" to "Task results",
+    "特权服务" to "Privilege service",
+    "任务被闸门拦下时在这里提示；会以横幅弹出并短促震动。" to
+        "Shown here when a task is blocked by the guard; pops as a banner with a short vibration.",
+    "任务完成、失败或放弃时在这里给出结果；会以横幅弹出，不出声也不震动。" to
+        "Results appear here when a task completes, fails, or is abandoned; pops as a banner without sound or vibration.",
+    "配对无线调试时在这里输入 6 位配对码。" to
+        "Enter the 6-digit pairing code here when pairing wireless debugging.",
+
+    // ---------- 审计按天分组 ----------
+    "昨天" to "Yesterday",
 )

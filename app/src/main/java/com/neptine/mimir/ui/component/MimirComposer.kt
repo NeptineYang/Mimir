@@ -30,10 +30,12 @@ private const val COMPOSER_MAX_LINES = 5
 /**
  * 功能：渲染一个"输入区 + 底部操作行"的输入组件（对话式 composer）
  * 参数：value 当前文本与光标位置；onValueChange 文本变化回调；placeholder 占位文案；
- *       modifier 修饰符；maxLength 最大字数；trailing 底部右侧的操作（语音、发送）
+ *       modifier 修饰符；maxLength 最大字数（只用于截断，不显示计数器）；
+ *       trailing 底部右侧的操作（语音、发送）
  * 返回：无
  *
- * 底部行左侧是字数计数，右侧由调用方决定放什么操作。
+ * 底部行只放操作，不显示字数上限：把"还能写多少字"摆在主输入区会暗示"别写太长"，
+ * 长任务本来就该把条件写全。超长粘贴由 onValueChange 静默截断。
  * 边框只有一层：输入框自身不再描边，避免出现"框套框"。
  * 用 TextFieldValue 而不是 String：语音回填是外部写入，String 重载会保留旧光标位置，
  * 新识别出的字会从句子中间插进去。
@@ -44,7 +46,7 @@ fun MimirComposer(
     onValueChange: (TextFieldValue) -> Unit,
     placeholder: String,
     modifier: Modifier = Modifier,
-    maxLength: Int = 240,
+    maxLength: Int = 500,
     trailing: @Composable RowScope.() -> Unit,
 ) {
     val colors = LocalMimirColors.current
@@ -83,7 +85,7 @@ fun MimirComposer(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            MonoLabel(text = "${value.text.length} / $maxLength", color = colors.muted)
+            // 左侧不再放字数计数：底部只保留语音/发送，整体右对齐
             Spacer(modifier = Modifier.weight(1f))
             trailing()
         }

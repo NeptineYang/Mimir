@@ -47,7 +47,9 @@ enum class TaskState {
  */
 fun allowedTransitions(state: TaskState): Set<TaskState> = when (state) {
     // ABORTED 面向"用户强制打断"：排队的任务还没开始跑，也必须能立刻结束，而不是只能删库。
-    TaskState.CREATED -> setOf(TaskState.PLANNING, TaskState.ABORTED)
+    // FAILED 面向"还没开工就失败"：建屏/准备阶段抛错时若没有这条边，任务会停在 CREATED，
+    // 前台服务队列立刻再次取到同一条，形成紧密重试循环（2026-11-13 实测 1600+ 次/分钟）。
+    TaskState.CREATED -> setOf(TaskState.PLANNING, TaskState.FAILED, TaskState.ABORTED)
     // PLANNING 也要能转人工：拉起前要查"用户是否正在主屏用目标 App"，命中就必须暂停等用户离开，
     // 而那一刻计划还没生成（计划要靠拉起后的首帧）。只给 FAILED 会把可恢复的暂停变成任务死亡。
     // ABORTED 是用户强制打断：任何还没结束的任务都必须在界面上可以被立刻停下。

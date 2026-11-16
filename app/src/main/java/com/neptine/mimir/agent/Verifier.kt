@@ -322,16 +322,38 @@ class Verifier @Inject constructor() {
      */
     private fun isUnverifiableContract(fields: List<String>, pageText: String): Boolean {
         if (fields.isEmpty()) return false
+        // 纯数值不参与这套判断：计算结果、价格、验证码都是语言中立的值，
+        // 页面只有数字没有拉丁字母也不影响核对（计算器 5535 曾被判成"抽象字段名"）。
+        if (fields.all { isNumericValue(it) }) return false
+
         val fieldsAsciiOnly = fields.all { field -> field.none { it.code > ASCII_LIMIT } }
         if (!fieldsAsciiOnly) return false
-        val identifierLike = fields.all { field -> field.isNotEmpty() && field.none { it.isWhitespace() } }
+        val identifierLike = fields.all { field ->
+            field.isNotEmpty() && field.none { it.isWhitespace() } && !isNumericValue(field)
+        }
         val pageHasLetters = pageText.any { it.code <= ASCII_LIMIT && it.isLetter() }
         return identifierLike || !pageHasLetters
+    }
+
+    /**
+     * 功能：判断一个片段是不是"数值"（含千位分隔、小数、百分号、货币符号）
+     * 参数：field 待判断的片段
+     * 返回：是数值为 true
+     *
+     * 只认数字与常见分隔/单位符号，出现任何字母就按"标识符或文案"处理。
+     */
+    private fun isNumericValue(field: String): Boolean {
+        if (field.isEmpty()) return false
+        if (field.none { it.isDigit() }) return false
+        return field.all { it.isDigit() || it in NUMERIC_SEPARATORS }
     }
 
     private companion object {
         /** ASCII 上界；超过它的字符视为中文等可见文本，不属于"抽象字段名"。 */
         const val ASCII_LIMIT = 127
+
+        /** 数值里允许出现的分隔与单位符号。 */
+        val NUMERIC_SEPARATORS = charArrayOf(',', '.', ' ', ':', '-', '+', '%', '¥', '＄', '$', '/')
     }
 }
 

@@ -5,10 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.Settings
+import com.neptine.mimir.device.selfhost.PrivilegeMonitor
+import com.neptine.mimir.device.selfhost.PrivilegeStatus
 import com.neptine.mimir.service.MimirAccessibilityService
 import com.neptine.mimir.service.RESULT_CHANNEL_ID
 import dagger.hilt.android.qualifiers.ApplicationContext
-import rikka.shizuku.Shizuku
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,7 +27,8 @@ enum class PermissionStatus {
 
 /** 三项权限的读取结果。 */
 data class PermissionSnapshot(
-    val shizuku: PermissionStatus,
+    /** 特权服务：配对 + 壳进程是否可用（见 [PrivilegeStatus]）。 */
+    val privilege: PermissionStatus,
     val accessibility: PermissionStatus,
     val notifications: PermissionStatus,
     /**
@@ -50,33 +52,28 @@ data class PermissionSnapshot(
 @Singleton
 class PermissionReader @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val privilegeMonitor: PrivilegeMonitor,
 ) {
 
     /**
      * 功能：读取三项权限的当前状态
      * 参数：无
      * 返回：三项状态快照
+     *
+     * 读之前先让状态机对齐一次：冷启动时 ViewModel 可能早于 Activity.onStart 读状态，
+     * 不刷会拿到"还没配对"的初始值，任务页会短暂显示错误提示。
      */
-    fun snapshot(): PermissionSnapshot = PermissionSnapshot(
-        shizuku = readShizuku(),
-        accessibility = readAccessibility(),
-        notifications = readNotifications(),
-        resultBanner = readResultBanner(),
-    )
-
-    /**
-     * 功能：发起 Shizuku 授权请求
-     * 参数：requestCode 请求码，结果通过 Shizuku 的监听器回调
-     * 返回：请求是否成功发出；服务未运行时返回 false
-     */
-    fun requestShizukuPermission(requestCode: Int): Boolean = runCatching {
-        if (!Shizuku.pingBinder()) {
-            false
-        } else {
-            Shizuku.requestPermission(requestCode)
-            true
-        }
-    }.getOrDefault(false)
+    fun snapshot(): PermissionSnapshot {
+        // 读之前先让状态机对齐一次：冷启动时 ViewModel 可能早于 Activity.onStart 读状态，
+        // 不刷会拿到"还没配对"的初始值，任务页会短暂显示错误提示。
+        privilegeMonitor.refresh()
+        return PermissionSnapshot(
+            privilege = readPrivilege(),
+            accessibility = readAccessibility(),
+            notifications = readNotifications(),
+            resultBanner = readResultBanner(),
+        )
+    }
 
     /**
      * 功能：打开系统的无障碍服务设置页
@@ -91,15 +88,27 @@ class PermissionReader @Inject constructor(
     }
 
     /**
-     * 功能：打开 Shizuku 应用（服务未运行时唯一的恢复途径）
+     * 功能：打开系统 Wi-Fi 设置页
      * 参数：无
      * 返回：无
      *
-     * Shizuku 服务不能由本应用启动：它需要用户在手机会话里走无线调试授权。
+     * 无线调试必须挂在 WLAN/以太网上，纯蜂窝下系统开关是灰的。
      */
-    fun openShizukuApp() {
-        val intent = context.packageManager.getLaunchIntentForPackage(SHIZUKU_PACKAGE) ?: return
-        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    fun openWifiSettings() {
+        context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    /**
+     * 功能：打开开发者选项页
+     * 参数：无
+     * 返回：无
+     *
+     * 无线调试没有稳定的独立 action，只能落到开发者选项让用户自行往下点。
+     */
+    fun openDeveloperOptions() {
+        context.startActivity(
+            Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 
     /**
@@ -170,17 +179,19 @@ class PermissionReader @Inject constructor(
     }.getOrDefault("—")
 
     /**
-     * 功能：读取 Shizuku 授权状态
+     * 功能：读取特权服务是否可用
      * 参数：无
-     * 返回：服务未运行 → UNAVAILABLE；已授权 → GRANTED；其余 → DENIED
+     * 返回：就绪 → GRANTED；缺配对/环境不满足/已断开 → DENIED
+     *
+     * 状态由 [PrivilegeMonitor] 统一算，这里只做映射：界面要区分"没配对"还是"没启动"
+     * 时读 monitor 的具体状态，而不是从三态里猜。
      */
-    private fun readShizuku(): PermissionStatus = runCatching {
-        when {
-            !Shizuku.pingBinder() -> PermissionStatus.UNAVAILABLE
-            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED -> PermissionStatus.GRANTED
-            else -> PermissionStatus.DENIED
+    private fun readPrivilege(): PermissionStatus =
+        if (privilegeMonitor.status.value == PrivilegeStatus.READY) {
+            PermissionStatus.GRANTED
+        } else {
+            PermissionStatus.DENIED
         }
-    }.getOrDefault(PermissionStatus.UNAVAILABLE)
 
     /**
      * 功能：读取无障碍服务是否已启用
@@ -224,6 +235,5 @@ class PermissionReader @Inject constructor(
 
     private companion object {
         /** Shizuku 的包名；只用于服务未运行时把用户送到它的界面。 */
-        const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
-    }
+        }
 }

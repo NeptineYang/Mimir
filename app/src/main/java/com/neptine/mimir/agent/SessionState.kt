@@ -23,7 +23,8 @@ import kotlinx.serialization.json.putJsonArray
  * @property replans 已用掉的受限重规划次数
  * @property stepRejections 当前步骤连续被驳回的完成声明次数
  * @property stepMemoryIds 当前步骤注入过的配方；被重规划取代时记它们一次失败
- * @property packageEscapes 已用掉的前台越界自愈次数
+ * @property packageEscapes 已用掉的前台越界自愈次数（按返回）
+ * @property packageRelaunches 已用掉的"重新拉起目标"自愈次数
  * @property planVersion 计数所属的计划版本；用于判断步骤级计数是否仍然有效
  * @property subtaskIndex 计数所属的子任务下标
  * @property stepIndex 计数所属的步骤下标
@@ -36,6 +37,7 @@ data class SessionState(
     val stepRejections: Int = 0,
     val stepMemoryIds: List<String> = emptyList(),
     val packageEscapes: Int = 0,
+    val packageRelaunches: Int = 0,
     val planVersion: Int = 0,
     val subtaskIndex: Int = 0,
     val stepIndex: Int = 0,
@@ -61,6 +63,7 @@ object SessionStateCodec {
         put("replans", state.replans)
         put("stepRejections", state.stepRejections)
         put("packageEscapes", state.packageEscapes)
+        put("packageRelaunches", state.packageRelaunches)
         put("planVersion", state.planVersion)
         put("subtaskIndex", state.subtaskIndex)
         put("stepIndex", state.stepIndex)
@@ -86,6 +89,7 @@ object SessionStateCodec {
             stepRejections = root.int("stepRejections"),
             stepMemoryIds = root.stringList("stepMemoryIds"),
             packageEscapes = root.int("packageEscapes"),
+            packageRelaunches = root.int("packageRelaunches"),
             planVersion = root.int("planVersion"),
             subtaskIndex = root.int("subtaskIndex"),
             stepIndex = root.int("stepIndex"),

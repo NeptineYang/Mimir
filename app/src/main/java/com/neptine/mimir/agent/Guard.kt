@@ -223,7 +223,7 @@ class Guard @Inject constructor(
             // 元素级点击但读不到任何文本：外卖/购物车的底部导航、购物车图标、加号都属于这一类。
             // 它和坐标点击同源（都是"没有语义的图标"），不该判得比坐标点击更死；
             // 但页面语境还能提供一层保护：页面上出现支付级文案时，图标点击必须人工确认。
-            val pageRisk = matchLevel(pageText(snapshot), HUMAN_ONLY_KEYWORDS)
+            val pageRisk = RiskLexicon.humanOnly(pageText(snapshot))
             if (pageRisk != null) {
                 return GuardDecision(
                     RiskLevel.L2A,
@@ -239,27 +239,27 @@ class Guard @Inject constructor(
             )
         }
 
-        matchLevel(target, HUMAN_ONLY_KEYWORDS)?.let { keyword ->
+        RiskLexicon.humanOnly(target)?.let { keyword ->
             return GuardDecision(RiskLevel.L2B, false, "目标「$target」命中仅本人步骤关键词「$keyword」，硬阻断")
         }
         // 「支付」「付款」不能按子串匹配：淘宝/拼多多的商品卡标题里常带销量文案
         // 「全网1000+人付款」，按子串判会把"点商品"直接判成支付步骤。
         // 只有整段文本本身就是一个支付动作标签（可带金额）时才按仅本人步骤处理。
-        if (isPaymentActionLabel(target)) {
+        if (RiskLexicon.isPaymentActionLabel(target)) {
             return GuardDecision(RiskLevel.L2B, false, "目标「$target」是支付动作标签，硬阻断")
         }
         // 用户原话就是"发消息/回复"时，消息发送按钮属于任务范围内的动作：
         // 再要求一次授权等于把已经明确的指令重新问一遍（微信/DeepSeek 实测）。
         // 转账/红包/金额类任务不走这条，那个「发送」不是消息。
-        val sendTarget = SEND_MESSAGE_TARGETS.any { target.lowercase().contains(it) }
-        if (sendTarget && isExplicitMessageSend(spec)) {
+        val sendTarget = RiskLexicon.isSendTarget(target)
+        if (sendTarget && RiskLexicon.isExplicitMessageSend(spec.inputText, spec.taskType)) {
             return GuardDecision(
                 RiskLevel.L1,
                 true,
                 "用户原话明确要求发送消息，目标「$target」是消息发送入口，按任务范围直接执行",
             )
         }
-        matchLevel(target, AUTHORIZABLE_KEYWORDS)?.let { keyword ->
+        RiskLexicon.authorizable(target)?.let { keyword ->
             return GuardDecision(
                 RiskLevel.L2A,
                 false,
@@ -269,9 +269,11 @@ class Guard @Inject constructor(
         }
 
         // 通用确认按钮：单独看不出后果，必须结合整页语义（§4.2 第 1 条）
-        if (target in GENERIC_CONFIRM_TEXTS) {
-            val pageText = pageText(snapshot)
-            val pageHit = matchLevel(pageText, HUMAN_ONLY_KEYWORDS + AUTHORIZABLE_KEYWORDS)
+        if (RiskLexicon.isGenericConfirm(target)) {
+            val pageHit = RiskLexicon.matchLevel(
+                pageText(snapshot),
+                RiskLexicon.HUMAN_ONLY_KEYWORDS + RiskLexicon.AUTHORIZABLE_KEYWORDS,
+            )
             if (pageHit != null) {
                 return GuardDecision(
                     RiskLevel.L2A,
@@ -282,7 +284,7 @@ class Guard @Inject constructor(
             }
         }
 
-        if (target in NAVIGATION_TEXTS) {
+        if (RiskLexicon.isNavigation(target)) {
             return GuardDecision(RiskLevel.L0, true, "纯导航按钮「$target」")
         }
         return GuardDecision(RiskLevel.L1, true, "普通写入「$target」，一期无 Reviewer 复核")
@@ -306,124 +308,17 @@ class Guard @Inject constructor(
      * 不依赖模型是否碰巧选中了验证相关文案。
      */
     fun pageVerification(snapshot: ObservationSnapshot): String? =
-        matchLevel(pageText(snapshot), VERIFICATION_PAGE_KEYWORDS)
-
-    /**
-     * 功能：判断一段文本是否整体就是"支付/付款"动作标签
-     * 参数：text 目标文本
-     * 返回：是支付动作标签为 true
-     *
-     * 只认整段匹配（可带"去/立即/确认"前缀与金额后缀），不做子串匹配：
-     * 商品标题「支付宝到账语音播报器」、销量「1000+人付款」都不该判成支付步骤。
-     */
-    private fun isPaymentActionLabel(text: String): Boolean {
-        val compact = text.filterNot { it.isWhitespace() }
-        return compact.isNotEmpty() && compact.length <= PAYMENT_LABEL_MAX_LENGTH &&
-            PAYMENT_ACTION_PATTERN.matches(compact)
-    }
+        RiskLexicon.verificationPage(pageText(snapshot))
 
     /**
      * 功能：判断目标是否为"只剩付款"的按钮
      * 参数：target 目标文本
      * 返回：命中的关键词；不是付款按钮时为 null
      *
-     * 与 L2B 判定共用一套词，但这里只取资金类：验证码、密码、滑块这些仍然走原来的硬阻断，
+     * 词表与匹配规则见 [RiskLexicon]：验证码、密码、滑块这些仍然走硬阻断，
      * 不能被"待支付页交接"分支当成任务正常收尾。
      */
-    fun paymentOnlyKeyword(target: String): String? {
-        matchLevel(target, PAYMENT_ONLY_KEYWORDS)?.let { return it }
-        return if (isPaymentActionLabel(target)) "支付" else null
-    }
-
-    /**
-     * 功能：任务是否明确要求"发送消息/回复"
-     * 参数：spec 任务约束
-     * 返回：明确要求为 true
-     *
-     * 先排除转账/红包/金额类任务：那些任务里的「发送」是资金动作，仍走授权/人工。
-     * taskType 命中 SEND_MESSAGE/CHAT/REPLY，或用户原话里出现发送/回复意图，都算明确要求。
-     */
-    private fun isExplicitMessageSend(spec: TaskSpec): Boolean {
-        val text = spec.inputText.lowercase()
-        if (PAYMENT_INTENT_KEYWORDS.any { text.contains(it) }) return false
-        val type = spec.taskType.uppercase()
-        // ASK_AI 也是"把一句话交给对话 App"：DeepSeek 实测任务类型就是 ASK_AI
-        val typeHit = listOf("SEND_MESSAGE", "CHAT", "REPLY", "ASK", "QUESTION").any { type.contains(it) }
-        return typeHit || SEND_INTENT_KEYWORDS.any { text.contains(it) }
-    }
-
-    /**
-     * 功能：在文本里找第一个命中的关键词
-     * 参数：text 待检查文本；keywords 关键词表
-     * 返回：命中的关键词；未命中为 null
-     */
-    private fun matchLevel(text: String, keywords: List<String>): String? =
-        keywords.firstOrNull { text.contains(it) }
-
-    private companion object {
-        /** 仅本人可做的资金与身份步骤（§4.2 L2B）。命中即硬阻断，不可被授权覆盖。 */
-        val HUMAN_ONLY_KEYWORDS = listOf(
-            // 「支付」「付款」单独见下：只能整段匹配，避免命中商品销量文案与商品标题
-            "立即支付", "确认支付", "去支付", "收银台",
-            "支付密码", "密码", "验证码", "指纹", "面容", "人脸", "免密",
-            // 风控人机验证：美团/滴滴这类 App 会弹滑块或点选验证，本项目的模型做不了，
-            // 也不该由 agent 去尝试——直接判 L2B 交人，避免它反复点导致风控升级。
-            "人机验证", "安全验证", "滑块", "拖动滑块", "滑动验证", "请完成验证", "身份验证",
-            "银行卡", "身份证", "转账",
-        )
-
-        /**
-         * 支付动作标签：可选动词前缀 + 支付/付款 + 可选金额。
-         * 用于替代「支付」「付款」的子串匹配，避免商品标题与销量文案误判。
-         */
-        val PAYMENT_ACTION_PATTERN = Regex(
-            """(请|去|立即|马上|确认|现在)?(支付|付款)(订单)?([¥￥]?\d+(\.\d+)?(元)?)?""",
-        )
-
-        /** 支付动作标签的最大长度：超过这个长度的文本是描述而不是按钮。 */
-        const val PAYMENT_LABEL_MAX_LENGTH = 16
-
-        /** 页面级验证关键词：命中即整页交人，不依赖模型选中具体元素。 */
-        val VERIFICATION_PAGE_KEYWORDS = listOf(
-            "人机验证", "安全验证", "拖动滑块", "拖动下方滑块", "滑动验证", "请完成验证", "滑块", "拼图",
-            "请输入图片中的内容", "请输入验证码", "验证码",
-            // 美团风控会换题型：滑块 → 图片文字 → 连点成线，文案里不一定带"滑块"。
-            "用最短线连接", "最短线", "身份核实", "请完成下方验证",
-        )
-
-        /** 可授权的外部副作用（§4.2 L2A）。 */
-        val AUTHORIZABLE_KEYWORDS = listOf(
-            "提交订单", "确认下单", "立即购买", "立即抢购", "确认支付订单",
-            "发送", "发布", "提交", "删除", "移除", "清空", "注销", "解绑", "订阅", "开通会员",
-        )
-
-        /** 消息发送按钮的文案；命中这些且任务明确要求发消息时才跳过二次授权。 */
-        val SEND_MESSAGE_TARGETS = listOf("发送", "回复", "send", "reply")
-
-        /** 只剩付款动作的按钮文案；点餐/下单类任务走到这里就交接给本人，不再代点。 */
-        val PAYMENT_ONLY_KEYWORDS = listOf(
-            "立即支付", "确认支付", "去支付", "收银台", "支付密码", "免密支付", "指纹支付", "面容支付",
-        )
-
-        /** 用户原话里"让我发消息"的意图词（英文统一小写后匹配）。 */
-        val SEND_INTENT_KEYWORDS = listOf(
-            "发送", "发消息", "发给", "发一条", "发个消息", "回消息", "回复", "告诉",
-            // 提问类任务（DeepSeek/其它问答 App）点「发送」也是在执行用户明确要求
-            "问", "提问", "询问", "咨询", "ask", "question", "prompt", "query",
-            "send", "message", "reply", "tell",
-        )
-
-        /** 出现这些词的任务属于资金场景，「发送」不能跳过授权。 */
-        val PAYMENT_INTENT_KEYWORDS = listOf("转账", "付款", "支付", "红包", "金额", "收款")
-
-        /** 通用确认文案；必须结合页面语义才能定级。 */
-        val GENERIC_CONFIRM_TEXTS = setOf("确定", "确认", "继续", "好的", "同意")
-
-        /** 明确可逆的导航文案。 */
-        val NAVIGATION_TEXTS = setOf(
-            "返回", "取消", "关闭", "跳过", "以后再说", "搜索", "更多", "菜单", "首页", "上一页", "下一页",
-        )
-    }
+    fun paymentOnlyKeyword(target: String): String? = RiskLexicon.paymentOnly(target)
 }
 
 /**

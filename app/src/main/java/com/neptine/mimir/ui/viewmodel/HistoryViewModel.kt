@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.neptine.mimir.agent.Orchestrator
+import com.neptine.mimir.agent.TaskSummaryWriter
 import com.neptine.mimir.core.contract.MemorySource
 import com.neptine.mimir.core.contract.MemoryStatus
 import com.neptine.mimir.core.contract.Preference
@@ -96,6 +97,7 @@ class HistoryViewModel @Inject constructor(
     private val database: MimirDatabase,
     private val screenshots: AuditScreenshotStore,
     private val orchestrator: Orchestrator,
+    private val summaryWriter: TaskSummaryWriter,
 ) : ViewModel() {
 
     private val filter = MutableStateFlow(HistoryFilter.ALL)
@@ -218,6 +220,9 @@ class HistoryViewModel @Inject constructor(
      */
     fun toggleExpanded(taskId: String) {
         expandedTaskId.value = if (expandedTaskId.value == taskId) null else taskId
+        // 展开时补一次总结：升级前的旧任务没有 summary，进程被杀也可能漏写；
+        // 已有总结时 writer 只读一行就返回，不会重复调用模型。
+        summaryWriter.schedule(taskId)
     }
 
     /**

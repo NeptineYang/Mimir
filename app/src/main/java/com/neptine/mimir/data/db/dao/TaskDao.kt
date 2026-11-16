@@ -125,6 +125,27 @@ interface TaskDao {
     suspend fun findNextCreated(): TaskEntity?
 
     /**
+     * 功能：观察某个时间点之后创建的任务（含终态）
+     * 参数：since 起始时间戳（含）
+     * 返回：按创建时间倒序的任务流
+     *
+     * 任务页"本次运行"用这一条：进程启动时间作 since，重启后自然清空，
+     * 不需要另建内存表；总结写入也会通过同一个 Flow 推回界面。
+     */
+    @Query("SELECT * FROM tasks WHERE created_at >= :since ORDER BY created_at DESC")
+    fun observeCreatedSince(since: Long): Flow<List<TaskEntity>>
+
+    /**
+     * 功能：写入任务的结果总结
+     * 参数：taskId 任务标识；summary 总结正文
+     * 返回：无
+     *
+     * 不动 updated_at：总结是任务的附属描述，不应影响"最近使用"统计与历史排序。
+     */
+    @Query("UPDATE tasks SET summary = :summary WHERE task_id = :taskId")
+    suspend fun updateSummary(taskId: String, summary: String)
+
+    /**
      * 功能：删除一条任务记录
      * 参数：taskId 任务标识
      * 返回：无

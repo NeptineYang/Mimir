@@ -33,8 +33,8 @@ android {
         applicationId = "com.neptine.mimir"
         minSdk = 30
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.3.1"
+        versionCode = 25
+        versionName = "0.3.9"
 
         // sherpa-onnx 的 AAR 带全部 ABI，只留演示机（arm64）与 AVD（x86_64）两套。
         ndk {
@@ -119,6 +119,15 @@ dependencies {
     // Shizuku：api 用于 binder 调用，provider 提供 <provider> 组件（authority 由 server 端拼成 <applicationId>.shizuku）。
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+
+    // 自建特权通道的底层协议（应用内无线调试配对 + adb shell 流），见 adblink/。
+    implementation(project(":adblink"))
+
+    // 壳进程要跨进程取 provider：裸 app_process 没有 AMS 的 app 记录，
+    // ContentResolver 会被 "Unable to find app for caller" 拒绝，只能用 getContentProviderExternal。
+    implementation(libs.rikka.hidden.compat)
+    // 隐藏 API 的类型声明只在编译期用；运行期由 boot classpath 提供，打进 APK 会重复类。
+    compileOnly(libs.rikka.hidden.stub)
 
     // 端侧语音识别：sherpa-onnx 官方预编译 AAR（含 JNI 与 onnxruntime）。
     // 体积约 49 MB，按仓库约定不入库，由 scripts/fetch-asr-assets.sh 落地到 app/libs。

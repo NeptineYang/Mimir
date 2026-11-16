@@ -34,6 +34,10 @@ import com.neptine.mimir.ui.viewmodel.AuditEventsViewModel
 import com.neptine.mimir.ui.viewmodel.AuditFilter
 import com.neptine.mimir.ui.viewmodel.formatTime
 import com.neptine.mimir.ui.viewmodel.parseRiskLevel
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /**
  * 功能：审计页——按"高危操作"列事件，而不是先选任务
@@ -99,7 +103,19 @@ fun AuditScreen(
                     modifier = Modifier.padding(top = MimirSpacing.md),
                     trailing = { MonoLabel(text = "${current.total} EVENTS", color = colors.muted) },
                 ) {
+                    val today = LocalDate.now()
+                    var lastDate: LocalDate? = null
                     current.rows.forEach { event ->
+                        val date = dayOf(event.timestamp)
+                        if (date != lastDate) {
+                            MonoLabel(
+                                text = dayLabel(date, today),
+                                modifier = Modifier.padding(
+                                    top = if (lastDate == null) MimirSpacing.xs else MimirSpacing.md,
+                                ),
+                            )
+                            lastDate = date
+                        }
                         AuditEventListRow(event = event, onOpen = onOpenEvent)
                     }
                 }
@@ -151,6 +167,29 @@ private fun AuditFilter.label(): String = when (this) {
     AuditFilter.BLOCKED -> "仅阻断"
     AuditFilter.CONFIRM -> "仅确认"
     AuditFilter.FAILED -> "仅失败"
+}
+
+/** 分组日期格式；跨年时也不会歧义。 */
+private val GROUP_DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+/**
+ * 功能：取时间戳所在的本地日期
+ * 参数：millis 毫秒时间戳
+ * 返回：本地时区下的日期
+ */
+private fun dayOf(millis: Long): LocalDate =
+    Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
+
+/**
+ * 功能：生成审计事件的分组标题
+ * 参数：date 事件日期；today 当前日期
+ * 返回：今天 / 昨天 / yyyy-MM-dd
+ */
+@Composable
+private fun dayLabel(date: LocalDate, today: LocalDate): String = when (date) {
+    today -> "今天".t()
+    today.minusDays(1) -> "昨天".t()
+    else -> date.format(GROUP_DATE_FORMAT)
 }
 
 /**

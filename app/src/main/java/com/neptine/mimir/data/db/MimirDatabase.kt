@@ -42,6 +42,8 @@ import com.neptine.mimir.data.memory.ProcedureTree
  *     旧 `mem_procedure.steps_json` 保留为派生快照，不再作为真值。
  * v8：偏好从纯文本升级为结构化（类别/主体/值/置信度/状态/命中计数）。
  * v9：新增定时任务表；到点执行走同一条任务创建链路，不复制状态机。
+ * v10：任务表新增结果总结列。
+ * v11：审计表新增(risk_level, decision, ts)索引，服务审计事件流筛选与分页。
  */
 @Database(
     entities = [
@@ -57,7 +59,7 @@ import com.neptine.mimir.data.memory.ProcedureTree
         CapabilityEntity::class,
         ScheduledTaskEntity::class,
     ],
-    version = 9,
+    version = 11,
     exportSchema = false,
 )
 abstract class MimirDatabase : RoomDatabase() {
@@ -349,6 +351,43 @@ abstract class MimirDatabase : RoomDatabase() {
              */
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE tasks ADD COLUMN session_json TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * 9 → 10 迁移：任务表新增结果总结列（v0.3.4）。
+         *
+         * 可空且不加 DEFAULT：旧任务没有总结，读取时为 null，界面按"无总结"处理；
+         * 加 DEFAULT '' 会让 Room 的 schema 校验与实体声明不一致。
+         */
+        val MIGRATION_9_10: Migration = object : Migration(9, 10) {
+            /**
+             * 功能：执行迁移
+             * 参数：db 目标版本的数据库连接
+             * 返回：无
+             */
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tasks ADD COLUMN summary TEXT")
+            }
+        }
+
+        /**
+         * 10 → 11 迁移：审计事件流索引（v0.3.6）。
+         *
+         * 索引名必须与 Room 按实体 indices 生成的默认名逐字一致，
+         * 否则迁移后校验会报 "Migration didn't properly handle"。
+         */
+        val MIGRATION_10_11: Migration = object : Migration(10, 11) {
+            /**
+             * 功能：执行迁移
+             * 参数：db 目标版本的数据库连接
+             * 返回：无
+             */
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_audit_risk_level_decision_ts` " +
+                        "ON `audit` (`risk_level`, `decision`, `ts`)",
+                )
             }
         }
     }

@@ -61,3 +61,6 @@ scripts/setup-env.ps1
 # 端侧语音识别依赖：由 scripts/fetch-asr-assets.py 下载并校验
 app/libs/
 app/src/main/assets/asr/
+
+# NDK / CMake 构建中间产物（adblink 的 JNI）
+.cxx/

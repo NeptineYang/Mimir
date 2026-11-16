@@ -12,6 +12,8 @@
     FAKE_REQUIRED_FIELDS  逗号分隔的完成必填字段，用于构造初验不通过（MISMATCH）
     FAKE_STEP_DONE   置 1 时走计划推进剧本：tap → step_done（后置条件取「Android 版本」）
     FAKE_REPLAN      置 1 时先发一次 replan，再按计划推进剧本走
+    FAKE_STEPS       计划步数（默认 1）；>1 时生成同样多步、每步后置条件都是
+                     「Android 版本」，用于跑满步数预算（如 55 步）
 
   PowerShell 示例：
     $env:FAKE_TAP_LABELS='网络和互联网,互联网,AndroidWifi,移除'
@@ -55,6 +57,15 @@ FAKE_TARGET_LABELS = [
 # 受限重规划剧本：第一次返回 replan，随后按计划推进剧本继续。
 FAKE_REPLAN = os.environ.get("FAKE_REPLAN", "") not in ("", "0")
 
+# 预算步数：>1 时规划器返回最多 48 步（6 子任务 × 8 步），执行器用额外 wait
+# 把总动作数补到 N，用来验证步数预算（maxSteps）与"计划走完直接进验证"。
+FAKE_STEPS = int(os.environ.get("FAKE_STEPS", "0"))
+
+# 规划器硬上限（与 Planner.MAX_SUBTASKS / MAX_STEPS_PER_SUBTASK 对齐）。
+PLAN_SUBTASKS = 6
+PLAN_STEPS_PER_SUBTASK = 8
+PLAN_LIMIT_STEPS = PLAN_SUBTASKS * PLAN_STEPS_PER_SUBTASK
+
 # 凭据剧本：进入 Mimir 设置 → 登录密码 → 新增 → 在密码框用第一条可用凭据填充。
 # 需要先在设备上用凭据页保存一条绑定 com.neptine.mimir 的登录密码。
 FAKE_CREDENTIAL = os.environ.get("FAKE_CREDENTIAL", "") not in ("", "0")
@@ -72,6 +83,19 @@ FAKE_WAIT_FIRST = os.environ.get("FAKE_WAIT_FIRST", "") not in ("", "0")
 
 # 全场调用计数与标签进度；每次解析新任务时归零。
 CALLS = {"executor": 0, "position": 0, "backs": 0, "credential_actions": 0, "cred_stage": 0}
+
+# 预算剧本的额外 wait 记账：target=补齐到 FAKE_STEPS 所需的 wait 数，
+# done=已发数，steps=已经加过 wait 的计划步 key（每步最多补一次）。
+BUDGET = {"target": 0, "done": 0, "steps": set()}
+
+# 从 prompt 的「[当前步骤] 子任务 x/y · 步骤 a/b」里取当前计划步。
+STEP_LINE = re.compile(r"子任务\s*(\d+)\s*/\s*\d+\s*·\s*步骤\s*(\d+)\s*/\s*\d+")
+
+
+def current_step_key(user_text):
+    """返回当前计划步的 (子任务序号, 步骤序号)；解析不到时返回 None。"""
+    match = STEP_LINE.search(user_text)
+    return (int(match.group(1)), int(match.group(2))) if match else None
 
 # 目标标签暂时不在当前页面时，最多先返回几页去找（模拟"局部自愈"）。
 MAX_BACKS = 3
@@ -228,6 +252,59 @@ def credential_scenario(user_text):
     return {"action": "wait", "seconds": 1}
 
 
+def summary_text(system):
+    """结果总结分支：返回一段纯文本（不是动作 JSON）。
+
+    TaskSummaryWriter 在任务终态后调用它；FAKE_STEPS 等剧本跑完后，
+    历史页应能看到这段文字，用来验证总结与懒生成路径。
+    """
+    if "结果总结器" in system:
+        return "（假后端）任务已完成演示步骤，最后停在目标页面；本次验证仅使用本地剧本。"
+    return "(fake backend) The demo task finished its scripted steps and stopped on the target page."
+
+
+def plan_subtasks():
+    """按 FAKE_STEPS 生成规划器返回的 subtasks。
+
+    预算剧本与普通剧本分开：
+    - FAKE_STEPS<=1：一个子任务、一步、后置条件「Android 版本」（默认剧本）；
+    - FAKE_STEPS>1：最多 48 步（规划器上限 6 子任务 × 8 步），步骤**不写后置条件**，
+      否则 Orchestrator 的 greedy advance 会把判据相同的后续步骤一次吞掉。
+      完成契约的必核字段仍由任务解析器的 requiredFields 校验。
+    """
+    count = FAKE_STEPS if FAKE_STEPS > 0 else 1
+    if count <= 1:
+        return [{
+            "objective": "在设置里打开关于手机页面",
+            "package": FAKE_PACKAGE,
+            "steps": [{
+                "intent": "打开设备的关于页",
+                "parameters": [],
+                "precondition": "设置首页",
+                "postcondition": ["Android 版本"],
+            }],
+        }]
+
+    total = min(count, PLAN_LIMIT_STEPS)
+    subtasks = []
+    for start in range(0, total, PLAN_STEPS_PER_SUBTASK):
+        steps = [
+            {
+                "intent": "确认仍在关于页（第 %d 步）" % (index + 1),
+                "parameters": [],
+                "precondition": "设置首页",
+                "postcondition": [],
+            }
+            for index in range(start, min(start + PLAN_STEPS_PER_SUBTASK, total))
+        ]
+        subtasks.append({
+            "objective": "在设置里打开关于手机页面",
+            "package": FAKE_PACKAGE,
+            "steps": steps,
+        })
+    return subtasks
+
+
 def plan_scenario(user_text):
     """计划推进剧本：先 replan（可选），再滚到目标并 tap，最后声明 step_done。
 
@@ -249,7 +326,19 @@ def plan_scenario(user_text):
                 return {"action": "swipe", "direction": "up", "distance": 60}
             return {"action": "finish", "summary": "没找到目标入口"}
         CALLS["position"] = 1
+        # 预算剧本：总动作数 = 导航动作 + 计划步 step_done + 额外 wait。
+        # 导航动作数就是当前 executor 调用序号（此前的调用全是 swipe/back）。
+        if FAKE_STEPS > 0:
+            plan_count = min(FAKE_STEPS, PLAN_LIMIT_STEPS)
+            BUDGET["target"] = max(0, FAKE_STEPS - plan_count - CALLS["executor"])
         return {"action": "tap", "element": index}
+
+    if FAKE_STEPS > 0 and BUDGET["done"] < BUDGET["target"]:
+        key = current_step_key(user_text)
+        if key is not None and key not in BUDGET["steps"]:
+            BUDGET["steps"].add(key)
+            BUDGET["done"] += 1
+            return {"action": "wait", "seconds": 1}
     return {"action": "step_done", "summary": "已进入关于手机页面"}
 
 
@@ -263,12 +352,19 @@ class Handler(BaseHTTPRequestHandler):
         system = text_of(messages[0].get("content")) if messages else ""
         user = text_of(messages[-1].get("content")) if messages else ""
 
-        if "任务解析器" in system:
+        # 总结请求与任务请求共用同一套 chat/completions 协议；它要的是纯文本，直接回一段话。
+        if "结果总结器" in system or "You summarize what a phone automation task" in system:
+            reply = None
+            content = summary_text(system)
+        elif "任务解析器" in system:
             CALLS["executor"] = 0
             CALLS["position"] = 0
             CALLS["backs"] = 0
             CALLS["credential_actions"] = 0
             CALLS["cred_stage"] = 0
+            BUDGET["target"] = 0
+            BUDGET["done"] = 0
+            BUDGET["steps"].clear()
             reply = {
                 "taskType": "NAVIGATE_SETTINGS",
                 "package": FAKE_PACKAGE,
@@ -279,25 +375,15 @@ class Handler(BaseHTTPRequestHandler):
                     "requiredFields": FAKE_REQUIRED_FIELDS,
                 },
             }
+            content = None
         elif "手机任务规划器" in system:
             reply = {
                 "assumptions": ["目标应用可以正常启动"],
-                "subtasks": [
-                    {
-                        "objective": "在设置里打开关于手机页面",
-                        "package": FAKE_PACKAGE,
-                        "steps": [
-                            {
-                                "intent": "打开设备的关于页",
-                                "parameters": [],
-                                "precondition": "设置首页",
-                                "postcondition": ["Android 版本"],
-                            }
-                        ],
-                    }
-                ],
+                "subtasks": plan_subtasks(),
             }
+            content = None
         else:
+            content = None
             CALLS["executor"] += 1
             # 调试用：把本轮用户消息落到临时文件，方便核对元素表（不属于交付物）
             try:
@@ -312,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
                 reply = input_scenario(user)
             elif FAKE_WAIT_FIRST and CALLS["executor"] == 1:
                 reply = {"action": "wait", "seconds": 1}
-            elif FAKE_STEP_DONE or FAKE_REPLAN:
+            elif FAKE_STEP_DONE or FAKE_REPLAN or FAKE_STEPS > 0:
                 reply = plan_scenario(user)
             else:
                 index, action = choose_action(user)
@@ -326,8 +412,14 @@ class Handler(BaseHTTPRequestHandler):
         payload = {
             "id": "fake-1",
             "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": json.dumps(reply, ensure_ascii=False)},
-                 "finish_reason": "stop"}
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": content if content is not None else json.dumps(reply, ensure_ascii=False),
+                    },
+                    "finish_reason": "stop",
+                },
             ],
             "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         }

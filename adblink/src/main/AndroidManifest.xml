@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 协议库模块：没有组件、没有权限，只提供 Kotlin 类与一个 JNI 库。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

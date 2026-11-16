@@ -7,14 +7,17 @@ import com.neptine.mimir.ui.i18n.tStatic
 import androidx.lifecycle.viewModelScope
 import com.neptine.mimir.agent.Orchestrator
 import com.neptine.mimir.agent.TaskLauncher
+import com.neptine.mimir.core.ProcessWindow
 import com.neptine.mimir.core.contract.TaskState
 import com.neptine.mimir.data.config.ModelConfigRepository
 import com.neptine.mimir.data.db.dao.AuditDao
 import com.neptine.mimir.data.db.dao.TaskDao
 import com.neptine.mimir.observation.AuditScreenshotStore
 import com.neptine.mimir.service.AgentForegroundService
+import com.neptine.mimir.device.selfhost.PrivilegeMonitor
 import com.neptine.mimir.ui.permission.PermissionReader
 import com.neptine.mimir.ui.permission.PermissionStatus
+import com.neptine.mimir.ui.permission.privilegeStatusText
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -32,14 +35,14 @@ import kotlinx.coroutines.withContext
 
 /**
  * 任务页输入框的字数上限。
+ *
+ * 界面上不显示计数器（上限只用来截断超长粘贴/语音回填），
+ * 500 字覆盖"多步任务 + 约束条件"的完整描述，不再逼用户压缩句子。
  */
-private const val MAX_INPUT_LENGTH = 240
+private const val MAX_INPUT_LENGTH = 500
 
-/** Shizuku 授权请求码；与设置页同值，结果不影响本次请求的发起。 */
-private const val SHIZUKU_REQUEST_CODE = 4201
-
-/** 授权弹窗关闭后等多久再读一次状态（毫秒）。 */
-private const val SHIZUKU_REFRESH_DELAY_MS = 1_200L
+/** 拉起特权服务后等它接入的时间（毫秒）。 */
+private const val PRIVILEGE_REFRESH_DELAY_MS = 3_000L
 
 /** 任务卡缩略图的最大宽度（像素）；只用于几十 dp 的展示位。 */
 private const val THUMB_MAX_WIDTH = 220
@@ -51,11 +54,8 @@ enum class EngineFix {
     /** 没有待处理项。 */
     NONE,
 
-    /** Shizuku 服务在跑但本应用未授权。 */
-    SHIZUKU_PERMISSION,
-
-    /** Shizuku 服务没运行，只能引导用户去启动它。 */
-    SHIZUKU_SERVICE,
+    /** 特权服务未就绪（缺配对 / 缺环境 / 进程没起来）。 */
+    PRIVILEGE,
 
     /** 无障碍服务未开启。 */
     ACCESSIBILITY,
@@ -86,6 +86,7 @@ class TaskViewModel @Inject constructor(
     private val auditDao: AuditDao,
     private val auditShots: AuditScreenshotStore,
     private val permissions: PermissionReader,
+    private val privilege: PrivilegeMonitor,
     private val models: ModelConfigRepository,
     private val orchestrator: Orchestrator,
     private val launcher: TaskLauncher,
@@ -93,6 +94,14 @@ class TaskViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _input = MutableStateFlow("")
+
+    init {
+        // 特权状态是会自己变的（壳进程后起/被回收），一次性读取会让界面停在旧结论上；
+        // 这里订阅状态流，变了就重算一次门禁文案。
+        viewModelScope.launch {
+            privilege.status.collect { refreshStatus() }
+        }
+    }
 
     /** 输入框文本。 */
     val input: StateFlow<String> = _input.asStateFlow()
@@ -125,6 +134,22 @@ class TaskViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
+     * 本次运行里已经结束的任务。
+     *
+     * 时间窗由 [ProcessWindow] 在进程启动时固定：进程死亡后窗口重置，列表自然清空，
+     * 不新增表、也不需要手动清理。只留终态——未结束的任务在上面的"进行中"区。
+     * 总结由 TaskSummaryWriter 异步写入，Room 的变更会把这个 Flow 推回界面。
+     */
+    val sessionTasks: StateFlow<List<TaskRow>?> =
+        taskDao.observeCreatedSince(ProcessWindow.startedAt)
+            .map { tasks ->
+                tasks.filter { parseTaskState(it.state)?.isTerminal == true }
+                    .map { it.toRow() }
+            }
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
      * 功能：刷新引擎状态
      * 参数：无
      * 返回：无
@@ -137,11 +162,14 @@ class TaskViewModel @Inject constructor(
             // Shizuku 的 pingBinder 与权限读取都是 binder 调用，放主线程会卡 UI（§5.3）
             val status = withContext(Dispatchers.IO) {
                 val permission = permissions.snapshot()
+                val privilegeHint = privilegeStatusText(privilege.status.value)
                 when {
-                    permission.shizuku == PermissionStatus.DENIED ->
-                        EngineStatus(false, "Shizuku 未授权，点这里授权".tStatic(), EngineFix.SHIZUKU_PERMISSION)
-                    permission.shizuku == PermissionStatus.UNAVAILABLE ->
-                        EngineStatus(false, "Shizuku 服务未运行，点这里去启动".tStatic(), EngineFix.SHIZUKU_SERVICE)
+                    permission.privilege != PermissionStatus.GRANTED ->
+                        EngineStatus(
+                            false,
+                            "特权服务未就绪：%1\$s，点这里启动".tStatic(privilegeHint),
+                            EngineFix.PRIVILEGE,
+                        )
                     permission.accessibility != PermissionStatus.GRANTED ->
                         EngineStatus(false, "无障碍服务未开启，点这里去开启".tStatic(), EngineFix.ACCESSIBILITY)
                     else -> {
@@ -168,14 +196,13 @@ class TaskViewModel @Inject constructor(
      */
     fun fixEngine() {
         when (_status.value.fix) {
-            EngineFix.SHIZUKU_PERMISSION -> {
-                permissions.requestShizukuPermission(SHIZUKU_REQUEST_CODE)
+            EngineFix.PRIVILEGE -> {
+                privilege.ensureStarted()
                 viewModelScope.launch {
-                    delay(SHIZUKU_REFRESH_DELAY_MS)
+                    delay(PRIVILEGE_REFRESH_DELAY_MS)
                     refreshStatus()
                 }
             }
-            EngineFix.SHIZUKU_SERVICE -> permissions.openShizukuApp()
             EngineFix.ACCESSIBILITY -> permissions.openAccessibilitySettings()
             EngineFix.MODEL, EngineFix.NONE -> Unit
         }

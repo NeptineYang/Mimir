@@ -22,11 +22,16 @@ internal object ShellJanitor {
      * 参数：无
      * 返回：结束的进程数
      *
-     * 只按"进程名完全等于本包 shell 进程名"匹配，且跳过自己：
-     * 同一时刻本应用只有一个主进程，因此其它同名 shell 进程必然是上一轮留下的。
+     * 按"进程名与本进程完全相同"匹配并跳过自己：同一时刻本应用只会有一个同名的
+     * 特权进程，其余同名进程必然是上一轮留下的。用进程自身名字而不是常量，
+     * 是为了让 Shizuku 宿主（`:shell`）与自建宿主（`:privileged`）各清各的、互不干扰。
      */
     fun killSiblings(): Int {
         val self = Process.myPid()
+        val myName = runCatching {
+            File("/proc/$self/cmdline").readText().trim('\u0000', '\n', ' ')
+        }.getOrNull()
+        if (myName.isNullOrEmpty()) return 0
         var killed = 0
         runCatching {
             File("/proc").listFiles()?.forEach { entry ->
@@ -35,7 +40,7 @@ internal object ShellJanitor {
                 val name = runCatching {
                     File(entry, "cmdline").readText().trim('\u0000', '\n', ' ')
                 }.getOrNull()
-                if (name != PROCESS_NAME) return@forEach
+                if (name != myName) return@forEach
                 if (runCatching { Process.killProcess(pid) }.isSuccess) killed++
             }
         }.onFailure { Log.w(TAG, "清理遗留 shell 进程失败：${it.message}") }
@@ -45,6 +50,5 @@ internal object ShellJanitor {
 
     private const val TAG = "MimirShell"
 
-    /** 本应用 shell UserService 的进程名（与 dumpsys/ps 中的显示一致）。 */
-    const val PROCESS_NAME = "com.neptine.mimir:shell"
+
 }

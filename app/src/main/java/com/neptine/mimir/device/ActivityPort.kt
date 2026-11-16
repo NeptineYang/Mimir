@@ -57,6 +57,16 @@ interface ActivityPort {
     suspend fun removeTasksOutside(packageName: String, handle: DisplayHandle): Boolean
 
     /**
+     * 功能：清理目标包在副屏内/外的全部任务
+     * 参数：packageName 目标包名；handle 建屏句柄
+     * 返回：至少清掉一个任务为 true
+     *
+     * 用于“am start 返回 started=true 但副屏没有可见窗口”的陈旧活动迁移：
+     * 先清干净再重拉一次，避免恢复重试被同一个看不见的旧活动接走。
+     */
+    suspend fun clearStaleTasks(packageName: String, handle: DisplayHandle): Boolean
+
+    /**
      * 功能：判断目标包是否在副屏上存在任务
      * 参数：packageName 目标包名；handle 建屏句柄
      * 返回：任务存在为 true

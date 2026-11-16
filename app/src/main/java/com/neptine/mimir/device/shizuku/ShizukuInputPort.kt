@@ -1,5 +1,6 @@
 package com.neptine.mimir.device.shizuku
 
+import com.neptine.mimir.device.shell.ShellSession
 import com.neptine.mimir.core.contract.DisplayHandle
 import com.neptine.mimir.core.contract.Point
 import com.neptine.mimir.device.InputPort
@@ -14,7 +15,7 @@ import kotlinx.coroutines.withContext
  *
  * 所有方法都切到 IO 线程：AIDL 是同步 binder 调用，且点击含按压时长，留在主线程会卡界面。
  */
-class ShizukuInputPort(private val shell: ShizukuShell) : InputPort {
+class ShizukuInputPort(private val shell: ShellSession) : InputPort {
 
     /**
      * 功能：在副屏指定点点击一次

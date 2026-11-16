@@ -14,4 +14,8 @@
     <!-- 结果通知：任务结束后的完成/失败报告（§4.1）。 -->
     <string name="result_channel_name">任务结果</string>
     <string name="result_channel_description">任务完成、失败或放弃时在这里给出结果；会以横幅弹出，不出声也不震动。</string>
+
+    <!-- 特权服务：配对码要在这一条通知里输入（HyperOS 会在离开设置时销毁系统配对框）。 -->
+    <string name="privilege_channel_name">特权服务</string>
+    <string name="privilege_channel_description">配对无线调试时在这里输入 6 位配对码。</string>
 </resources>

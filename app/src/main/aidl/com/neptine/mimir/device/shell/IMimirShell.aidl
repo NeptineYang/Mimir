@@ -46,6 +46,13 @@ interface IMimirShell {
     boolean removeTasksOutside(String packageName, int displayId);
 
     /**
+     * 清理目标包在指定显示内/外的全部任务。
+     * 用于“am start 返回 started=true 但副屏没有可见窗口”的陈旧活动迁移：先清干净再重拉。
+     * 返回至少清掉一个任务为 true。
+     */
+    boolean clearStaleTasks(String packageName, int displayId);
+
+    /**
      * 判断目标包是否在指定显示上存在任务。
      * 无障碍窗口索引偶发退化（副屏窗口读不出来）时，用它判断"应用到底有没有拉起来"。
      */
@@ -100,4 +107,11 @@ interface IMimirShell {
 
     /** 读取当前系统默认输入法的 id；读取失败返回空串。 */
     String currentImeId();
+
+    /**
+     * 让壳进程体面退出。
+     * 用于并发拉起时的仲裁、升级换代，以及令牌失效后的清理：旧进程不退出会和新的并存，
+     * 两者抢同一块虚拟屏与同一份日志。
+     */
+    void shutdown();
 }

@@ -99,6 +99,11 @@
             android:name=".service.HandoffReceiver"
             android:exported="false" />
 
+        <!-- 通知栏里的配对码回复：由本应用自己的 PendingIntent 触发，不需要对外导出。 -->
+        <receiver
+            android:name=".service.PairingReplyReceiver"
+            android:exported="false" />
+
         <!-- 定时任务闹钟：只把触发转交前台服务，执行逻辑不在接收器里。 -->
         <receiver
             android:name=".service.schedule.ScheduledTaskReceiver"
@@ -112,6 +117,17 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- 自建特权通道：壳进程把 binder 交付进来的唯一入口。
+             四属性与 Shizuku 的 provider 同构——exported 才能被 shell uid 访问，
+             INTERACT_ACROSS_USERS_FULL 只有 system/shell/root 持有。 -->
+        <provider
+            android:name=".device.shell.BridgeProvider"
+            android:authorities="${applicationId}.shell"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <!-- Shizuku：四属性必须齐全，authority 固定为 ${applicationId}.shizuku。 -->
         <provider

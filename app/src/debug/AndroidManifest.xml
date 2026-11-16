@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只在 debug 构建合并：把调试配对入口暴露给 adb，release 包不含此组件。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name="com.neptine.mimir.debug.DebugPairReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.neptine.mimir.DEBUG_PAIR" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

@@ -3,8 +3,10 @@ package com.neptine.mimir
 import android.app.Application
 import android.util.Log
 import com.neptine.mimir.agent.TaskRecovery
+import com.neptine.mimir.core.ProcessWindow
 import com.neptine.mimir.data.db.dao.ScheduledTaskDao
 import com.neptine.mimir.device.DeviceTransport
+import com.neptine.mimir.observation.AuditStorageJanitor
 import com.neptine.mimir.service.schedule.ScheduledTaskScheduler
 import com.neptine.mimir.service.schedule.toContract
 import dagger.hilt.android.HiltAndroidApp
@@ -35,6 +37,9 @@ class MimirApplication : Application() {
     @Inject
     lateinit var scheduledScheduler: ScheduledTaskScheduler
 
+    @Inject
+    lateinit var auditJanitor: AuditStorageJanitor
+
     /** 冷启动清理用的作用域；Application 与进程同寿命。 */
     private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -49,10 +54,30 @@ class MimirApplication : Application() {
      */
     override fun onCreate() {
         super.onCreate()
+        ProcessWindow.markStart()
         recovery.launch()
         startupScope.launch { runCatching { transport.ime.restoreIfLeftOver() } }
         startupScope.launch { reapLeftoverDisplays() }
         startupScope.launch { rescheduleScheduledTasks() }
+        startupScope.launch { pruneAuditScreenshots() }
+    }
+
+    /**
+     * 功能：清理过期审计截图
+     * 参数：无
+     * 返回：无
+     *
+     * 冷启动扫一次即可：保留期 30 天，过期清理不需要分钟级精度；
+     * 放在 IO 作用域里，文件多时也不影响首帧。
+     */
+    private suspend fun pruneAuditScreenshots() {
+        runCatching { auditJanitor.sweep() }
+            .onSuccess { result ->
+                if (result.deletedDirs > 0) {
+                    Log.i(STORAGE_TAG, "清理过期截图 ${result.deletedDirs} 个任务，释放 ${result.freedBytes} 字节")
+                }
+            }
+            .onFailure { Log.w(STORAGE_TAG, "清理过期截图失败：${it.message}") }
     }
 
     /**
@@ -89,5 +114,8 @@ class MimirApplication : Application() {
 
     private companion object {
         const val TAG = "MimirDisplay"
+
+        /** 截图清理日志标签；与副屏回收分开，排障时好过滤。 */
+        const val STORAGE_TAG = "MimirStorage"
     }
 }

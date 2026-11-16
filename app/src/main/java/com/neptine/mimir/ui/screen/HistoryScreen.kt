@@ -503,6 +503,19 @@ private fun HistoryRow(
                 fadeOut(animationSpec = tween(120)),
         ) {
             Column(modifier = Modifier.padding(bottom = MimirSpacing.lg)) {
+                // 结果总结放在最前：它回答"这条任务到底做成了什么"，
+                // 目标应用/步数这些字段是补充信息，不该抢在结论前面。
+                row.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+                    Column(modifier = Modifier.padding(bottom = MimirSpacing.md)) {
+                        MonoLabel(text = "结果总结".t(), color = colors.muted)
+                        Text(
+                            text = summary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.ink,
+                            modifier = Modifier.padding(top = MimirSpacing.xs),
+                        )
+                    }
+                }
                 KeyValueRow(
                     key = "目标应用".t(),
                     value = row.packageName.ifBlank { "—（尚未解析）".t() },

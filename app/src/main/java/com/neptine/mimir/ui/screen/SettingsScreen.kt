@@ -45,16 +45,23 @@ import com.neptine.mimir.ui.component.MimirHairline
 import com.neptine.mimir.ui.component.MimirListRow
 import com.neptine.mimir.ui.component.MimirPageHeader
 import com.neptine.mimir.ui.component.MonoLabel
+import com.neptine.mimir.ui.component.PrimaryPillButton
 import com.neptine.mimir.ui.component.SectionBlock
 import com.neptine.mimir.ui.component.StatusChip
 import com.neptine.mimir.ui.component.TextActionButton
+import com.neptine.mimir.device.selfhost.PrivilegeStatus
 import com.neptine.mimir.ui.permission.PermissionStatus
+import com.neptine.mimir.ui.permission.privilegeStatusDetail
+import com.neptine.mimir.ui.permission.privilegeStatusText
 import com.neptine.mimir.ui.theme.LocalMimirColors
 import com.neptine.mimir.ui.theme.MimirSpacing
+import com.neptine.mimir.observation.AuditCleanupResult
+import com.neptine.mimir.observation.AuditStorageUsage
 import com.neptine.mimir.ui.viewmodel.AppCapabilityItem
 import com.neptine.mimir.ui.viewmodel.CapabilityRow
 import com.neptine.mimir.ui.viewmodel.SettingsUiState
 import com.neptine.mimir.ui.viewmodel.SettingsViewModel
+import com.neptine.mimir.ui.viewmodel.formatBytes
 import com.neptine.mimir.ui.viewmodel.formatTime
 
 /**
@@ -108,7 +115,7 @@ fun SettingsScreen() {
         if (state.guideVisible) {
             OnboardingSection(
                 state = state,
-                onRequestShizuku = viewModel::requestShizukuPermission,
+                onFixPrivilege = viewModel::fixPrivilege,
                 onOpenAccessibility = viewModel::openAccessibilitySettings,
                 onOpenNotifications = onOpenNotifications,
                 onEditModel = viewModel::startModelEdit,
@@ -118,10 +125,17 @@ fun SettingsScreen() {
 
         PermissionSection(
             state = state,
-            onRequestShizuku = viewModel::requestShizukuPermission,
+            onFixPrivilege = viewModel::fixPrivilege,
             onOpenAccessibility = viewModel::openAccessibilitySettings,
             onOpenNotifications = onOpenNotifications,
             onOpenResultBanner = viewModel::openResultBannerSettings,
+        )
+
+        PrivilegeSection(
+            state = state,
+            onStartPairing = viewModel::startPairing,
+            onStartService = viewModel::startPrivilegeService,
+            onClearKey = viewModel::clearAdbKey,
         )
 
         ModelSection(
@@ -133,6 +147,13 @@ fun SettingsScreen() {
         )
 
         AsrSection(state = state, onTest = viewModel::testAsr)
+
+        StorageSection(
+            usage = state.storage,
+            clearing = state.storageClearing,
+            cleared = state.storageCleared,
+            onClear = viewModel::clearScreenshots,
+        )
 
         CapabilitySection(
             capabilities = state.capabilities,
@@ -152,6 +173,108 @@ fun SettingsScreen() {
 }
 
 /**
+ * 功能：渲染「特权服务」分组——状态、配对与启动
+ * 参数：state 设置页状态；onStartPairing 发起配对（会在通知栏弹输入框）；
+ *       onStartService 手动拉起壳进程；onClearKey 清除已保存的 adb 密钥
+ * 返回：无
+ *
+ * 配对码在通知栏里输入，不在应用内弹框：HyperOS 在设置失去前台的瞬间就销毁系统的
+ * 配对对话框，配对端口随之关闭；通知栏输入不切前台，端口才能活着。
+ */
+@Composable
+private fun PrivilegeSection(
+    state: SettingsUiState,
+    onStartPairing: () -> Unit,
+    onStartService: () -> Unit,
+    onClearKey: () -> Unit,
+) {
+    val colors = LocalMimirColors.current
+    val adb = state.adb
+
+    ExpandableSection(
+        title = "特权服务".t(),
+        summary = privilegeStatusText(state.privilegeStatus),
+    ) {
+        Text(
+            text = privilegeStatusDetail(state.privilegeStatus),
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.muted,
+        )
+        if (!adb.paired) {
+            Text(
+                text = "在系统「开发者选项 → 无线调试」里点「使用配对码配对设备」，" +
+                    "再点下面的按钮，下拉通知栏把 6 位码回复进去。全过程不需要切回 Mimir。",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.muted,
+                modifier = Modifier.padding(top = MimirSpacing.xxs),
+            )
+        }
+        Row(
+            modifier = Modifier.padding(top = MimirSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PrimaryPillButton(
+                text = when {
+                    adb.busy -> "配对中…".t()
+                    adb.paired -> "重新配对".t()
+                    else -> "配对无线调试".t()
+                },
+                onClick = onStartPairing,
+                enabled = !adb.busy,
+            )
+            if (adb.paired) {
+                TextActionButton(text = "清除密钥".t(), onClick = onClearKey)
+            }
+        }
+        adb.result?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.ink,
+                modifier = Modifier.padding(top = MimirSpacing.sm),
+            )
+        }
+
+        MimirHairline(modifier = Modifier.padding(vertical = MimirSpacing.sm))
+
+        // 服务段：配对只解决"能不能连"，这一步才把壳进程真正拉起来；
+        // 正常情况下回到前台会自动拉起，这里的按钮是手动兜底。
+        Text(
+            text = "服务：%1\$s".t(
+                when {
+                    state.privilegeStatus == PrivilegeStatus.READY -> "运行中".t()
+                    state.service.starting -> "启动中…".t()
+                    else -> "未启动".t()
+                },
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.ink,
+        )
+        Row(
+            modifier = Modifier.padding(top = MimirSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PrimaryPillButton(
+                text = "启动特权服务".t(),
+                onClick = onStartService,
+                enabled = adb.paired && !state.service.starting,
+                disabledHint = if (adb.paired) null else "先完成配对".t(),
+            )
+        }
+        state.service.error?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.error,
+                modifier = Modifier.padding(top = MimirSpacing.sm),
+            )
+        }
+    }
+}
+
+/**
  * 功能：渲染权限三段
  * 参数：state 设置页状态；三个权限动作回调；完成提醒开关动作回调
  * 返回：无
@@ -159,20 +282,21 @@ fun SettingsScreen() {
 @Composable
 private fun PermissionSection(
     state: SettingsUiState,
-    onRequestShizuku: () -> Unit,
+    onFixPrivilege: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenResultBanner: () -> Unit,
 ) {
-    val ready = listOf(state.shizuku, state.accessibility, state.notifications, state.resultBanner)
+    val ready = listOf(state.privilege, state.accessibility, state.notifications, state.resultBanner)
         .count { it == PermissionStatus.GRANTED }
     ExpandableSection(title = "权限".t(), summary = "%1\$d / 4 已就绪".t(ready)) {
         PermissionRow(
-            name = "Shizuku",
-            status = state.shizuku,
-            detail = "拿 shell uid 执行系统级操作；重启手机后服务不会自动拉起，需要重新启动 Shizuku。".t(),
-            actionLabel = if (state.shizuku == PermissionStatus.GRANTED) null else "去授权".t(),
-            onAction = onRequestShizuku,
+            name = "特权服务".t(),
+            status = state.privilege,
+            statusLabel = privilegeStatusText(state.privilegeStatus),
+            detail = privilegeStatusDetail(state.privilegeStatus),
+            actionLabel = if (state.privilege == PermissionStatus.GRANTED) null else "去处理".t(),
+            onAction = onFixPrivilege,
         )
         PermissionRow(
             name = "无障碍服务".t(),
@@ -270,6 +394,7 @@ private fun PermissionRow(
     detail: String,
     actionLabel: String?,
     onAction: () -> Unit,
+    statusLabel: String? = null,
 ) {
     val colors = LocalMimirColors.current
     Row(
@@ -291,7 +416,7 @@ private fun PermissionRow(
                     style = MaterialTheme.typography.bodyLarge,
                     color = colors.ink,
                 )
-                StatusChip(text = status.label(), fg = status.color())
+                StatusChip(text = statusLabel ?: status.label(), fg = status.color())
             }
             Text(
                 text = detail,
@@ -430,6 +555,84 @@ private fun AsrSection(
                 modifier = Modifier.padding(top = MimirSpacing.xs),
             )
         }
+    }
+}
+
+/**
+ * 功能：渲染审计截图的存储与清理一段
+ * 参数：usage 当前占用；clearing 是否正在清理；cleared 最近一次清理结果；onClear 清理回调
+ * 返回：无
+ *
+ * 截图在应用私有目录里，相册看不到；这一段回答"占了多少、怎么清"。
+ * 清理只删已完成任务，进行中的任务仍需要回放画面，不能一起删。
+ */
+@Composable
+private fun StorageSection(
+    usage: AuditStorageUsage?,
+    clearing: Boolean,
+    cleared: AuditCleanupResult?,
+    onClear: () -> Unit,
+) {
+    val colors = LocalMimirColors.current
+    var confirming by remember { mutableStateOf(false) }
+    val summary = usage?.let { "%1\$s · %2\$d 个文件".t(formatBytes(it.bytes), it.files) }
+        ?: "读取中".t()
+
+    ExpandableSection(title = "存储".t(), summary = summary) {
+        KeyValueRow(key = "审计截图".t(), value = summary, mono = true)
+        KeyValueRow(
+            key = "自动清理".t(),
+            value = "超过 30 天的截图自动删除，总量上限 300 MB。".t(),
+        )
+        KeyValueRow(key = "保留范围".t(), value = "进行中的任务不受影响。".t())
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = MimirSpacing.sm, bottom = MimirSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(MimirSpacing.sm, Alignment.End),
+        ) {
+            TextActionButton(
+                text = if (clearing) "清理中".t() else "清理截图".t(),
+                onClick = { confirming = true },
+                enabled = !clearing && (usage?.files ?: 0) > 0,
+            )
+        }
+        cleared?.let { result ->
+            Text(
+                text = if (result.deletedDirs == 0) {
+                    "没有可清理的截图".t()
+                } else {
+                    "已清理 %1\$s".t(formatBytes(result.freedBytes))
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.deepGreen,
+            )
+        }
+    }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text(text = "清理审计截图".t(), style = MaterialTheme.typography.titleMedium) },
+            text = { Text(text = "将删除已结束任务的全部审计截图，进行中的任务保留。".t()) },
+            confirmButton = {
+                TextActionButton(
+                    text = "清理".t(),
+                    onClick = {
+                        confirming = false
+                        onClear()
+                    },
+                    emphasis = true,
+                )
+            },
+            dismissButton = {
+                TextActionButton(
+                    text = "取消".t(),
+                    onClick = { confirming = false },
+                    color = colors.muted,
+                )
+            },
+        )
     }
 }
 
@@ -580,7 +783,7 @@ private fun CapabilitySection(
 @Composable
 private fun OnboardingSection(
     state: SettingsUiState,
-    onRequestShizuku: () -> Unit,
+    onFixPrivilege: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onOpenNotifications: () -> Unit,
     onEditModel: () -> Unit,
@@ -588,7 +791,7 @@ private fun OnboardingSection(
 ) {
     val colors = LocalMimirColors.current
     val modelReady = state.modelLoaded && state.model != null && state.hasApiKey
-    val allReady = state.shizuku == PermissionStatus.GRANTED &&
+    val allReady = state.privilege == PermissionStatus.GRANTED &&
         state.accessibility == PermissionStatus.GRANTED &&
         state.notifications == PermissionStatus.GRANTED &&
         modelReady
@@ -605,10 +808,10 @@ private fun OnboardingSection(
             modifier = Modifier.padding(bottom = MimirSpacing.sm),
         )
         GuideStepRow(
-            title = "授权 Shizuku".t(),
-            ready = state.shizuku == PermissionStatus.GRANTED,
-            actionLabel = "去授权".t(),
-            onAction = onRequestShizuku,
+            title = "启用特权服务".t(),
+            ready = state.privilege == PermissionStatus.GRANTED,
+            actionLabel = "去处理".t(),
+            onAction = onFixPrivilege,
         )
         GuideStepRow(
             title = "开启无障碍服务".t(),
@@ -699,7 +902,7 @@ private fun AppMatrixSection(
     onRefresh: () -> Unit,
 ) {
     val colors = LocalMimirColors.current
-    val readyNow = state.shizuku == PermissionStatus.GRANTED &&
+    val readyNow = state.privilege == PermissionStatus.GRANTED &&
         state.accessibility == PermissionStatus.GRANTED &&
         state.modelLoaded &&
         state.model != null &&

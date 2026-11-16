@@ -29,17 +29,80 @@ internal class TaskMover(context: Context) {
      * 参数：packageName 目标包名；displayId 需要保留的显示
      * 返回：至少移除一个任务为 true
      */
-    fun removeOutside(packageName: String, displayId: Int): Boolean {
-        val service = service() ?: return false
+    fun removeOutside(packageName: String, displayId: Int): Boolean =
+        removeMatching(packageName, displayId, outside = true)
+
+    /**
+     * 功能：移除目标包在指定显示上的残留任务
+     * 参数：packageName 目标包名；displayId 目标显示
+     * 返回：至少移除一个任务为 true
+     *
+     * 用于拉起被现有实例接走后的自愈：目标屏上可能留着一个没有可见窗口的旧任务，
+     * `am start` 会把 intent 投给它而不是新建实例。清掉后由调用方重试一次。
+     * 清场扫描对 `topActivity` 不可读的残留任务会回退到 baseActivity/realActivity，
+     * 否则锁屏时任务栈顶层信息缺失会把残留任务漏掉。
+     */
+    fun removeOnDisplay(packageName: String, displayId: Int): Boolean =
+        removeMatching(packageName, displayId, outside = false)
+
+    /**
+     * 功能：清理目标包在指定显示内/外的全部任务
+     * 参数：packageName 目标包名；displayId 目标显示
+     * 返回：至少清掉一个任务为 true
+     *
+     * 用于“am start 返回 started=true 但副屏没有可见窗口”的陈旧活动迁移：
+     * 反射 removeTask 对顶部任务可能失败，这里对每个没清掉的任务再用 am stack remove 兜底。
+     */
+    fun clearStale(packageName: String, displayId: Int): Boolean {
+        val onDisplay = removeMatching(packageName, displayId, outside = false)
+        val outside = removeMatching(packageName, displayId, outside = true)
+        return onDisplay || outside
+    }
+
+    /**
+     * 功能：按“屏内 / 屏外”移除目标包的任务
+     * 参数：packageName 目标包名；displayId 参考显示；outside 为 true 清屏外，false 清屏内
+     * 返回：至少移除一个任务为 true
+     */
+    private fun removeMatching(packageName: String, displayId: Int, outside: Boolean): Boolean {
+        val service = service()
         var removed = false
-        for (task in tasksOutside(packageName, displayId)) {
-            if (removeTask(service, task.taskId)) {
-                Log.d(TAG, "清场 display ${task.displayId}：task=${task.taskId} pkg=$packageName")
+        for (task in tasksForRemoval(packageName, displayId, outside)) {
+            val byReflection = service != null && removeTask(service, task.taskId)
+            val ok = byReflection || removeTaskViaAm(task.taskId)
+            if (ok) {
+                Log.d(
+                    TAG,
+                    "清场 display ${task.displayId}：task=${task.taskId} pkg=$packageName " +
+                        "outside=$outside byAm=${!byReflection}",
+                )
                 removed = true
             }
         }
         return removed
     }
+
+    /**
+     * 功能：用 am stack remove 兜底移除一个任务
+     * 参数：taskId 任务标识
+     * 返回：命令成功且没有报错为 true
+     *
+     * 反射 removeTask 在部分 ROM 上对顶部任务返回 false；`am stack remove` 走的是
+     * 同一条 ActivityTaskManager 实现，实测可以移除（0.3.8 真机手动验证）。
+     */
+    private fun removeTaskViaAm(taskId: Int): Boolean = runCatching {
+        val process = ProcessBuilder(AM_BINARY, "stack", "remove", taskId.toString())
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exit = process.waitFor()
+        if (exit != 0 || output.containsAny(MOVE_FAILURE_HINTS)) {
+            Log.d(TAG, "am stack remove $taskId 失败：exit=$exit out=${output.take(160)}")
+            false
+        } else {
+            true
+        }
+    }.onFailure { Log.d(TAG, "am stack remove $taskId 异常：${it.message}") }.getOrDefault(false)
 
     /**
      * 功能：判断目标包是否在指定显示上存在任务
@@ -208,21 +271,32 @@ internal class TaskMover(context: Context) {
     }
 
     /**
-     * 功能：列出目标包不在指定显示上的任务
-     * 参数：packageName 目标包名；displayId 需要保留的显示
+     * 功能：列出用于清场的目标包任务
+     * 参数：packageName 目标包名；displayId 参考显示；outside 为 true 取屏外，false 取屏内
      * 返回：任务标识与所在显示的列表
+     *
+     * 清场允许回退到 baseActivity/realActivity：锁屏或任务顶层信息不可读时，
+     * 只认 topActivity 会把真正占着实例的任务漏掉（真机 0.3.6 定时任务的失败原因）。
      */
-    private fun tasksOutside(packageName: String, displayId: Int): List<TaskRef> {
+    private fun tasksForRemoval(
+        packageName: String,
+        displayId: Int,
+        outside: Boolean,
+    ): List<TaskRef> {
         val all = runningTasks()
-
         val refs = all.mapNotNull { info ->
-            val owner = topPackageOf(info) ?: return@mapNotNull null
+            val owner = ownerPackageOf(info) ?: return@mapNotNull null
             val taskDisplayId = intField(info, "displayId") ?: return@mapNotNull null
             val taskId = intField(info, "taskId", "id") ?: return@mapNotNull null
-            if (owner != packageName || taskDisplayId == displayId) null
+            val onReference = taskDisplayId == displayId
+            if (owner != packageName || onReference == outside) null
             else TaskRef(taskId = taskId, displayId = taskDisplayId)
         }
-        Log.d(TAG, "任务扫描：共 ${all.size} 个，命中 $packageName 且不在 display $displayId 上的 ${refs.size} 个：$refs")
+        Log.d(
+            TAG,
+            "任务扫描（清场）：共 ${all.size} 个，命中 $packageName 且" +
+                (if (outside) "不在" else "在") + " display $displayId 上的 ${refs.size} 个：$refs",
+        )
         return refs
     }
 
@@ -247,9 +321,27 @@ internal class TaskMover(context: Context) {
      * 只认 topActivity：baseActivity 是任务创建时的 Activity，App 跳到子页面后它仍是入口页，
      * 用它判断会把"任务已经跑到别处"误判成"还在原处"。
      */
-    private fun topPackageOf(info: Any): String? = runCatching {
-        val component = info.javaClass.getField("topActivity").get(info) as? android.content.ComponentName
-        component?.packageName
+    private fun topPackageOf(info: Any): String? = componentPackageOf(info, "topActivity")
+
+    /**
+     * 功能：读任务归属包名；topActivity 不可读时回退到 baseActivity/realActivity
+     * 参数：info RunningTaskInfo 实例
+     * 返回：包名；三个字段都读不到为 null
+     *
+     * 只给“清场”用：主屏冲突判定仍只认 topActivity（避免任务跳到别的 App 后误判）。
+     */
+    private fun ownerPackageOf(info: Any): String? =
+        topPackageOf(info)
+            ?: componentPackageOf(info, "baseActivity")
+            ?: componentPackageOf(info, "realActivity")
+
+    /**
+     * 功能：读任务上的某个 ComponentName 字段的包名
+     * 参数：info RunningTaskInfo；field 字段名
+     * 返回：包名；字段缺失或为空为 null
+     */
+    private fun componentPackageOf(info: Any, field: String): String? = runCatching {
+        (info.javaClass.getField(field).get(info) as? android.content.ComponentName)?.packageName
     }.getOrNull()
 
     /**
@@ -272,7 +364,8 @@ internal class TaskMover(context: Context) {
      */
     private fun removeTask(service: Any, taskId: Int): Boolean = runCatching {
         val method = service.javaClass.getMethod("removeTask", Int::class.javaPrimitiveType)
-        method.invoke(service, taskId) as? Boolean ?: false
+        val result = method.invoke(service, taskId)
+        if (method.returnType == Void.TYPE) true else result as? Boolean ?: false
     }.getOrDefault(false)
 
     /**
@@ -304,6 +397,9 @@ internal class TaskMover(context: Context) {
 
         /** 主屏显示编号；Android 上默认显示恒为 0。 */
         const val DISPLAY_MAIN = 0
+
+        /** 系统自带 am 命令；反射 removeTask 失败时的兜底。 */
+        const val AM_BINARY = "/system/bin/am"
 
         /** 搬运后校验的次数与间隔：getRunningTasks 是快照，跨屏搬运后要等一拍。 */
         const val MOVE_VERIFY_ATTEMPTS = 3

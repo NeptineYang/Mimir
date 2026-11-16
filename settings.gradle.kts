@@ -27,3 +27,6 @@ include(":app")
 // 隐藏 API 编译期桩：只进编译期 classpath（app 用 compileOnly 引用），不进 APK。
 // 业务分层仍全部在 app 的单模块包边界内，此模块只承载 framework 的隐藏类型声明。
 include(":hidden-api")
+// 应用内无线调试通道：vendor 自 Shizuku 的 adb 实现（Apache-2.0），只做协议层。
+// 独立成模块的原因：它带 NDK/CMake 产物（SPAKE2 的 JNI），与 app 的构建节奏隔离。
+include(":adblink")

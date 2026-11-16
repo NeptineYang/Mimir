@@ -4,8 +4,15 @@ import com.neptine.mimir.ui.i18n.tStatic
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.neptine.mimir.device.selfhost.AdbPairingHub
+import com.neptine.mimir.device.selfhost.PrivilegeMonitor
+import com.neptine.mimir.device.selfhost.PrivilegeStatus
+import com.neptine.mimir.device.selfhost.ShellBridge
+import com.neptine.mimir.device.selfhost.ShellLauncher
+import com.neptine.mimir.service.PrivilegeNotifier
 import com.neptine.mimir.data.config.HealthResult
 import com.neptine.mimir.data.config.ModelConfigRepository
 import com.neptine.mimir.data.config.ModelHealthChecker
@@ -15,6 +22,9 @@ import com.neptine.mimir.data.db.dao.TaskDao
 import com.neptine.mimir.data.db.entity.CapabilityEntity
 import com.neptine.mimir.device.CapabilityProbe
 import com.neptine.mimir.device.DeviceTransport
+import com.neptine.mimir.observation.AuditCleanupResult
+import com.neptine.mimir.observation.AuditStorageJanitor
+import com.neptine.mimir.observation.AuditStorageUsage
 import com.neptine.mimir.ui.onboarding.Onboarding
 import com.neptine.mimir.ui.permission.PermissionReader
 import com.neptine.mimir.ui.permission.PermissionStatus
@@ -29,11 +39,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 import javax.inject.Inject
 
-/** Shizuku 授权请求码。 */
-private const val SHIZUKU_REQUEST_CODE = 4001
+
 
 /** 日志标签。 */
 private const val TAG = "SettingsViewModel"
@@ -81,7 +91,7 @@ data class AppCapabilityItem(
 
 /** 设置页状态。 */
 data class SettingsUiState(
-    val shizuku: PermissionStatus,
+    val privilege: PermissionStatus,
     val accessibility: PermissionStatus,
     val notifications: PermissionStatus,
     /**
@@ -116,6 +126,49 @@ data class SettingsUiState(
     val asrTesting: Boolean = false,
     /** 端侧语音模型自检结论。 */
     val asrResult: String? = null,
+    /** 审计截图占用；null 表示还没读出来。 */
+    val storage: AuditStorageUsage? = null,
+    /** 是否正在清理截图。 */
+    val storageClearing: Boolean = false,
+    /** 最近一次清理结果；用于"已清理"回执。 */
+    val storageCleared: AuditCleanupResult? = null,
+    /** 无线调试配对自检状态（0.3.5 实验入口）。 */
+    val adb: AdbPairingHub.State = AdbPairingHub.State(),
+    /** 特权服务的细分状态（配对 / 环境 / 进程），用于给用户一句准确的提示。 */
+    val privilegeStatus: PrivilegeStatus = PrivilegeStatus.NEED_PAIR,
+    /** 壳进程是否已就绪。 */
+    val serviceReady: Boolean = false,
+    /** 壳进程启动状态。 */
+    val service: ShellServiceState = ShellServiceState(),
+)
+
+/**
+ * 特权服务相关的四路状态打包。
+ *
+ * Kotlin 的 combine 最多只有 5 个流的具名重载，设置页已经用到 5 路，
+ * 这里把四个相关流先并成一个，避免落到 Array<Any> 的 vararg 重载上。
+ *
+ * @property adb 配对状态
+ * @property ready 壳进程是否已接入
+ * @property service 启动过程状态
+ * @property privilegeStatus 细分状态
+ */
+private data class PrivilegeUiBundle(
+    val adb: AdbPairingHub.State,
+    val ready: Boolean,
+    val service: ShellServiceState,
+    val privilegeStatus: PrivilegeStatus,
+)
+
+/**
+ * 特权服务（壳进程）的启动状态。
+ *
+ * @property starting 是否正在拉起
+ * @property error 最近一次启动失败的原因，null 表示没失败过
+ */
+data class ShellServiceState(
+    val starting: Boolean = false,
+    val error: String? = null,
 )
 
 /**
@@ -131,6 +184,10 @@ class SettingsViewModel @Inject constructor(
     private val probe: CapabilityProbe,
     private val models: ModelConfigRepository,
     private val healthChecker: ModelHealthChecker,
+    private val auditJanitor: AuditStorageJanitor,
+    private val shellLauncher: ShellLauncher,
+    private val shellBridge: ShellBridge,
+    private val privilege: PrivilegeMonitor,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -140,6 +197,14 @@ class SettingsViewModel @Inject constructor(
     private val guideFlow = MutableStateFlow(Onboarding.needsGuide(context))
     private val matrixFlow = MutableStateFlow(MatrixState())
     private val asrFlow = MutableStateFlow(AsrTestState())
+    private val storageFlow = MutableStateFlow(StorageState())
+    private val serviceFlow = MutableStateFlow(ShellServiceState())
+
+    init {
+        // 配对可能发生在通知栏（另一个执行者），进页面时先对齐一次真实状态。
+        AdbPairingHub.refresh(context)
+    }
+
 
     /**
      * Shizuku 授权结果的回调；只在实例存活期间注册，onCleared 时移除。
@@ -159,7 +224,7 @@ class SettingsViewModel @Inject constructor(
             guideFlow,
         ) { current, capabilities, modelSection, probing, guideVisible ->
             SettingsUiState(
-                shizuku = current.shizuku,
+                privilege = current.privilege,
                 accessibility = current.accessibility,
                 notifications = current.notifications,
                 resultBanner = current.resultBanner,
@@ -179,7 +244,16 @@ class SettingsViewModel @Inject constructor(
         },
         matrixFlow,
         asrFlow,
-    ) { base, matrix, asr ->
+        storageFlow,
+        combine(
+            AdbPairingHub.state,
+            shellBridge.ready,
+            serviceFlow,
+            privilege.status,
+        ) { adb, ready, service, privilegeStatus ->
+            PrivilegeUiBundle(adb, ready, service, privilegeStatus)
+        },
+    ) { base, matrix, asr, storage, bundle ->
         base.copy(
             appMatrix = matrix.items,
             appMatrixLoading = matrix.loading,
@@ -187,6 +261,13 @@ class SettingsViewModel @Inject constructor(
             launchabilityKnown = matrix.launchabilityKnown,
             asrTesting = asr.testing,
             asrResult = asr.result,
+            storage = storage.usage,
+            storageClearing = storage.clearing,
+            storageCleared = storage.cleared,
+            adb = bundle.adb,
+            serviceReady = bundle.ready,
+            service = bundle.service,
+            privilegeStatus = bundle.privilegeStatus,
         )
     }
         .flowOn(Dispatchers.Default)
@@ -194,7 +275,7 @@ class SettingsViewModel @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = SettingsUiState(
-                shizuku = permissionFlow.value.shizuku,
+                privilege = permissionFlow.value.privilege,
                 accessibility = permissionFlow.value.accessibility,
                 notifications = permissionFlow.value.notifications,
                 resultBanner = permissionFlow.value.resultBanner,
@@ -217,6 +298,7 @@ class SettingsViewModel @Inject constructor(
         runCatching { Shizuku.addRequestPermissionResultListener(shizukuListener) }
         loadModelConfig()
         refreshAppMatrix()
+        refreshStorage()
     }
 
     /**
@@ -323,6 +405,39 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * 功能：刷新审计截图占用（顺带跑一次过期清理）
+     * 参数：无
+     * 返回：无
+     *
+     * 先清理再统计：设置页显示的是清理后的真实占用，用户不必先点一次"清理"才看到变化。
+     * 清理与统计都失败时保持 null，界面显示"读取中"，不假装是 0。
+     */
+    fun refreshStorage() {
+        viewModelScope.launch {
+            runCatching { auditJanitor.sweep() }
+            val usage = runCatching { auditJanitor.usage() }.getOrNull()
+            storageFlow.value = storageFlow.value.copy(usage = usage)
+        }
+    }
+
+    /**
+     * 功能：清空已完成任务的审计截图
+     * 参数：无
+     * 返回：无
+     *
+     * 进行中的任务由仓库按任务状态保留；清理后重新统计一次，回执里带释放的字节数。
+     */
+    fun clearScreenshots() {
+        if (storageFlow.value.clearing) return
+        viewModelScope.launch {
+            storageFlow.value = storageFlow.value.copy(clearing = true, cleared = null)
+            val result = runCatching { auditJanitor.clear() }.getOrNull()
+            val usage = runCatching { auditJanitor.usage() }.getOrNull()
+            storageFlow.value = StorageState(usage = usage, clearing = false, cleared = result)
+        }
+    }
+
+    /**
      * 功能：取应用名
      * 参数：packageName 包名
      * 返回：桌面显示名；应用已卸载或读不到时退回包名
@@ -332,13 +447,58 @@ class SettingsViewModel @Inject constructor(
         manager.getApplicationLabel(manager.getApplicationInfo(packageName, 0)).toString()
     }.getOrDefault(packageName)
 
+    fun fixPrivilege() {
+        when (privilege.status.value) {
+            PrivilegeStatus.NO_WIFI -> permissions.openWifiSettings()
+            PrivilegeStatus.WIRELESS_OFF -> permissions.openDeveloperOptions()
+            PrivilegeStatus.NEED_PAIR -> startPairing()
+            PrivilegeStatus.PAIRED_IDLE, PrivilegeStatus.SERVICE_DEAD -> privilege.ensureStarted()
+            PrivilegeStatus.STARTING, PrivilegeStatus.READY -> Unit
+        }
+    }
+
     /**
-     * 功能：发起 Shizuku 授权请求
+     * 功能：发出一条配对通知，等用户在通知栏输入配对码（0.3.5 实验入口）
+     * 参数：无
+     * 返回：无；结果写进 [AdbPairingHub.state]
+     *
+     * 为什么不在应用内弹输入框：HyperOS 在设置失去前台的瞬间就销毁系统的配对对话框，
+     * 配对端口随之关闭。通知栏输入不切前台，对话框与端口都活着。
+     */
+    fun startPairing() {
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            Log.w(TAG, "notifications disabled, cannot show pairing prompt")
+            // 没有通知权限就没有输入入口，直接把原因摆到界面上，不让按钮看起来"点了没反应"。
+            AdbPairingHub.reportNotificationBlocked()
+            return
+        }
+        PrivilegeNotifier(context).prompt()
+    }
+
+    /**
+     * 功能：拉起壳进程（自建特权通道）
+     * 参数：无
+     * 返回：无；结果写进 serviceFlow，就绪状态由 ShellBridge 广播
+     */
+    fun startPrivilegeService() {
+        if (serviceFlow.value.starting) return
+        serviceFlow.value = ShellServiceState(starting = true)
+        viewModelScope.launch {
+            val result = shellLauncher.start()
+            serviceFlow.value = ShellServiceState(
+                starting = false,
+                error = result.exceptionOrNull()?.message,
+            )
+        }
+    }
+
+    /**
+     * 功能：清除已保存的 adb 密钥
      * 参数：无
      * 返回：无
      */
-    fun requestShizukuPermission() {
-        permissions.requestShizukuPermission(SHIZUKU_REQUEST_CODE)
+    fun clearAdbKey() {
+        AdbPairingHub.clearKey(context)
     }
 
     /**
@@ -547,6 +707,19 @@ private data class MatrixState(
     val loading: Boolean = false,
     val launchableCount: Int = 0,
     val launchabilityKnown: Boolean = false,
+)
+
+/**
+ * 存储分区的状态。
+ *
+ * @property usage 当前占用；null 表示还没读出来
+ * @property clearing 是否正在清理
+ * @property cleared 最近一次清理结果；为空表示没有回执
+ */
+private data class StorageState(
+    val usage: AuditStorageUsage? = null,
+    val clearing: Boolean = false,
+    val cleared: AuditCleanupResult? = null,
 )
 
 /** 矩阵最多展示多少行：按最近使用与用量排序后的前几条，避免铺满整屏。 */

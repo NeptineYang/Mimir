@@ -8,11 +8,13 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.mutableStateOf
+import com.neptine.mimir.device.selfhost.PrivilegeMonitor
 import com.neptine.mimir.ui.MimirApp
 import com.neptine.mimir.ui.i18n.LanguagePrefs
 import com.neptine.mimir.ui.i18n.UiLanguageState
 import com.neptine.mimir.ui.theme.MimirTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 /**
  * 壳入口：Compose 宿主。
@@ -22,6 +24,23 @@ import dagger.hilt.android.AndroidEntryPoint
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    /** 特权服务状态机；回到前台时重算并按需拉起壳进程。 */
+    @Inject
+    lateinit var privilege: PrivilegeMonitor
+
+    /**
+     * 功能：每次回到前台刷新特权服务状态
+     * 参数：无
+     * 返回：无
+     *
+     * 用户可能刚打开无线调试、刚连上 Wi-Fi，或者壳进程被系统回收了；
+     * refresh() 内部会按冷却策略尝试自动拉起，失败不影响界面其余部分。
+     */
+    override fun onStart() {
+        super.onStart()
+        privilege.refresh()
+    }
 
     /**
      * 交接通知带过来的任务标识；由 MimirApp 跳到接管页后清空。

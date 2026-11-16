@@ -2,11 +2,11 @@
 
 Mimir 是一个 Android 手机 Agent：用户继续使用主屏的同时，Agent 在独立的虚拟屏上观察并操作真实 App，完成自然语言任务。支付、登录、验证码等需要本人完成的步骤会交给用户处理。
 
-项目使用 Kotlin、Jetpack Compose、Shizuku 和无障碍服务，不需要 Root、系统签名或修改 ROM。
+项目使用 Kotlin、Jetpack Compose 和无障碍服务，通过应用内无线调试通道或 Shizuku 获得 shell 权限，不需要 Root、系统签名或修改 ROM。
 
 ## 主要能力
 
-- **主屏与 Agent 隔离**：通过 Shizuku shell 权限创建虚拟显示，避免 Agent 抢占用户前台画面和焦点。
+- **主屏与 Agent 隔离**：通过应用内无线调试通道或 Shizuku 创建虚拟显示，避免 Agent 抢占用户前台画面和焦点。
 - **多通道界面观测**：结合无障碍控件树、截图和端侧 OCR；模型优先选择元素编号，而不是直接猜测屏幕坐标。
 - **任务执行与复核**：显式任务状态机、动作后置条件、结果复验和 Room 检查点。
 - **风险分级与人工接管**：外部副作用按风险分级处理，资金、身份、验证码等操作硬阻断并交人。
@@ -20,7 +20,7 @@ Mimir 是一个 Android 手机 Agent：用户继续使用主屏的同时，Agent
 ### 环境要求
 
 - Android 11（API 30）或更高版本，推荐 arm64 真机。
-- [Shizuku](https://github.com/RikkaApps/Shizuku) 可用，并能通过无线调试或现有 Shizuku 启动方式获得 shell 权限。
+- 可用于应用内配对的无线调试，或已启动并可授权的 [Shizuku](https://github.com/RikkaApps/Shizuku)；默认优先使用应用内通道。
 - 一个 OpenAI 兼容的 `chat/completions` 接口及其 API Key。
 
 从 [GitHub Releases](https://github.com/NeptineYang/Mimir/releases/latest) 下载已签名的 `mimir-<version>.apk`，允许系统安装该 APK 后打开 Mimir。
@@ -29,13 +29,13 @@ Mimir 是一个 Android 手机 Agent：用户继续使用主屏的同时，Agent
 
 ### 首次使用
 
-1. 启动 Shizuku，并在 Mimir 中授予 Shizuku 权限。手机重启后可能需要重新启动 Shizuku。
+1. 按应用内引导完成无线调试配对；如果选择 Shizuku 后备通道，先启动 Shizuku 并授予 Mimir 权限。
 2. 按应用内引导开启 Mimir 的无障碍服务。
 3. 允许通知；需要语音输入时再授权麦克风。
 4. 在设置页填写模型 `base_url`、API Key 和模型名，执行连通性测试。
 5. 在任务页输入任务并确认任务边界。
 
-HyperOS / MIUI 等系统可能需要将 Mimir 和 Shizuku 的省电策略设为“无限制”，以减少后台进程被系统终止的情况。
+HyperOS / MIUI 等系统可能需要将 Mimir 的省电策略设为“无限制”；使用 Shizuku 时也应检查其后台策略，以减少进程被系统终止的情况。
 
 ## 从源码构建
 
@@ -44,6 +44,7 @@ HyperOS / MIUI 等系统可能需要将 Mimir 和 Shizuku 的省电策略设为�
 - 支持 AGP 9.1.1 的 Android Studio。
 - JDK 17 或项目构建工具支持的更新版本。
 - Android SDK Platform 37、Build-Tools 36.0.0 和 Platform-Tools。
+- NDK 28.2.13676358 和 CMake 3.22.1，用于构建 `adblink` 原生配对模块。
 - Python 3，用于下载端侧语音识别依赖。
 
 克隆仓库：
@@ -62,7 +63,7 @@ python scripts/fetch-asr-assets.py
 ### 使用 Android Studio
 
 1. 用 Android Studio 打开仓库根目录，而不是只打开 `app/`。
-2. 在 SDK Manager 中安装 Android SDK Platform 37 和对应构建工具。
+2. 在 SDK Manager 中安装 Android SDK Platform 37、对应构建工具、NDK 28.2.13676358 和 CMake 3.22.1。
 3. 在 Gradle 设置中选择兼容的 Gradle JDK。Android Studio 会在本机生成 `local.properties`，不要提交该文件。
 4. 等待 Gradle Sync 完成，选择 `app` 运行配置。
 5. 连接 Android 11+ 设备并启用 USB 调试，然后运行 `app`；也可以先执行下面的命令行构建。
@@ -101,6 +102,7 @@ app/src/main/java/com/neptine/mimir/
 ├── service/       无障碍、输入法、前台服务与通知
 └── ui/            Compose 页面、组件和 ViewModel
 
+adblink/          应用内无线调试配对与 adb 协议（含 JNI）
 hidden-api/       仅编译期使用的 Android 隐藏 API 桩
 scripts/          语音依赖下载、本地假模型与设备调试脚本
 ```
@@ -123,7 +125,7 @@ python scripts/fake-llm-server.py
 
 ## 安全边界
 
-- Mimir 需要 Shizuku 和无障碍等高权限。请只安装自己信任的构建，并在授权前审查源码。
+- Mimir 需要无线调试 shell 权限或 Shizuku，以及无障碍等高权限。请只安装自己信任的构建，并在授权前审查源码。
 - App 文案、广告、OCR 结果和模型输出都按不可信输入处理；高风险动作不能仅凭模型声明执行。
 - 支付、身份验证、验证码、人脸或指纹等步骤必须由用户本人完成。
 - API Key 在设备上使用加密存储，但模型请求仍会发往你配置的模型服务；请确认该服务的隐私策略。
@@ -146,4 +148,4 @@ python scripts/fake-llm-server.py
 
 项目源码采用 [Apache License 2.0](LICENSE)。
 
-Inter、Space Grotesk 和 Space Mono 字体采用 SIL Open Font License 1.1；相关版权和许可证见 [NOTICE](NOTICE) 与 [licenses/Fonts-OFL-1.1.txt](licenses/Fonts-OFL-1.1.txt)。构建时下载的 sherpa-onnx、模型及其他依赖仍遵循各自许可证。
+`adblink` 包含 Shizuku 派生代码，采用 Apache License 2.0；Inter、Space Grotesk 和 Space Mono 字体采用 SIL Open Font License 1.1。相关归属和许可证见 [NOTICE](NOTICE) 与 [licenses/Fonts-OFL-1.1.txt](licenses/Fonts-OFL-1.1.txt)。构建时下载的 sherpa-onnx、模型及其他依赖仍遵循各自许可证。

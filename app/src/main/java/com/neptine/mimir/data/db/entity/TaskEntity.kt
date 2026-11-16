@@ -105,4 +105,13 @@ data class TaskEntity(
     /** 终态时间戳（毫秒）；未结束为空。 */
     @ColumnInfo(name = "finished_at")
     val finishedAt: Long?,
+
+    /**
+     * 结果总结（v0.3.4）。
+     *
+     * 终态后由 TaskSummaryWriter 写入：2–4 句，说明做了什么、停在哪、结果如何。
+     * 生成失败时写模板兜底，不让历史页出现空白；可空是为了兼容升级前的旧任务。
+     */
+    @ColumnInfo(name = "summary")
+    val summary: String? = null,
 )

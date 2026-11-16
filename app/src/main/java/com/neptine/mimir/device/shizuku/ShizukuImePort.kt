@@ -1,5 +1,6 @@
 package com.neptine.mimir.device.shizuku
 
+import com.neptine.mimir.device.shell.ShellSession
 import android.content.ComponentName
 import android.content.Context
 import android.provider.Settings
@@ -26,7 +27,7 @@ import kotlinx.coroutines.withContext
  */
 class ShizukuImePort(
     private val context: Context,
-    private val shell: ShizukuShell,
+    private val shell: ShellSession,
 ) : ImePort {
 
     /** 切换前的输入法 id；restore 用它切回去。内存值优先，进程重启后从落盘值恢复。 */

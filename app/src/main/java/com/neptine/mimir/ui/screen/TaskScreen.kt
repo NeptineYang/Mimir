@@ -76,6 +76,7 @@ import com.neptine.mimir.ui.viewmodel.EngineFix
 import com.neptine.mimir.ui.viewmodel.TaskRow
 import com.neptine.mimir.ui.viewmodel.TaskViewModel
 import com.neptine.mimir.ui.viewmodel.formatElapsed
+import com.neptine.mimir.ui.viewmodel.formatTime
 import com.neptine.mimir.ui.voice.VoiceStatus
 import com.neptine.mimir.ui.voice.rememberVoiceInputController
 import kotlinx.coroutines.delay
@@ -94,6 +95,7 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
     val input by viewModel.input.collectAsStateWithLifecycle()
     val engine by viewModel.status.collectAsStateWithLifecycle()
     val activeTasks by viewModel.activeTasks.collectAsStateWithLifecycle()
+    val sessionTasks by viewModel.sessionTasks.collectAsStateWithLifecycle()
     val colors = LocalMimirColors.current
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -253,6 +255,27 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
             }
         }
 
+        // 本次运行：进程启动后已结束的任务。历史页是长期账本，
+        // 这里只回答"这次打开应用到现在做了什么"，重启即清空。
+        val session = sessionTasks
+        if (session != null && session.isNotEmpty()) {
+            SectionBlock(
+                title = "本次运行".t(),
+                modifier = Modifier.padding(top = MimirSpacing.xl),
+                trailing = {
+                    MonoLabel(text = "${session.size} FINISHED", color = colors.muted)
+                },
+            ) {
+                session.forEach { row -> SessionTaskRow(row) }
+                Text(
+                    text = "重启应用后清空；长期记录在历史页。".t(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.muted,
+                    modifier = Modifier.padding(top = MimirSpacing.xs),
+                )
+            }
+        }
+
         Spacer(modifier = Modifier.height(MimirSpacing.huge))
     }
 
@@ -293,6 +316,58 @@ fun TaskScreen(onOpenTakeover: (String) -> Unit, onOpenSettings: () -> Unit) {
                 TextActionButton(text = "返回".t(), onClick = { pendingStop = null })
             },
         )
+    }
+}
+
+/**
+ * 功能：渲染一条"本次运行"里已结束的任务
+ * 参数：row 任务展示模型
+ * 返回：无
+ *
+ * 只展示原话、终态、结束时间与总结；参数、步数与审计入口属于历史页，
+ * 任务页保持"这次做了什么"的最短路径。
+ */
+@Composable
+private fun SessionTaskRow(row: TaskRow) {
+    val colors = LocalMimirColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = MimirSpacing.md),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = row.inputText,
+                style = MaterialTheme.typography.bodyLarge,
+                color = colors.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.size(MimirSpacing.sm))
+            if (row.state != null) {
+                TaskStateChip(state = row.state)
+            } else {
+                StatusChip(text = row.rawState, fg = colors.slate)
+            }
+        }
+        MonoLabel(
+            text = formatTime(row.finishedAt ?: row.createdAt),
+            color = colors.muted,
+            uppercase = false,
+            modifier = Modifier.padding(top = MimirSpacing.xxs),
+        )
+        (row.summary ?: row.suspendReason)?.takeIf { it.isNotBlank() }?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (row.state == TaskState.FAILED) colors.coral else colors.slate,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = MimirSpacing.xs),
+            )
+        }
+        MimirHairline()
     }
 }
 
