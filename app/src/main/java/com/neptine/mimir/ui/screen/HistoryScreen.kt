@@ -12,6 +12,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,9 +21,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -51,7 +52,7 @@ import com.neptine.mimir.ui.component.MimirPageHeader
 import com.neptine.mimir.ui.component.Pager
 import com.neptine.mimir.ui.component.MonoLabel
 import com.neptine.mimir.ui.component.PreferenceEditorDialog
-import com.neptine.mimir.ui.component.SectionBlock
+import com.neptine.mimir.ui.component.SectionHeader
 import com.neptine.mimir.ui.component.StatusChip
 import com.neptine.mimir.ui.component.TaskStateChip
 import com.neptine.mimir.ui.component.TextActionButton
@@ -98,67 +99,76 @@ fun HistoryScreen(
     var pendingPreference by remember { mutableStateOf<PreferenceDraft?>(null) }
     var preferenceError by remember { mutableStateOf<String?>(null) }
 
-    Column(
+    val current = pageState
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = MimirSpacing.page),
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(horizontal = MimirSpacing.page),
     ) {
-        MimirPageHeader(
-            title = "历史".t(),
-        )
-
-        HistoryFilterRow(selected = selectedFilter, onSelect = viewModel::setFilter)
-
-        val current = pageState
-        if (current != null && current.total == 0) {
-            if (selectedFilter == HistoryFilter.ALL) {
-                EmptyState(
-                    title = "还没有历史记录".t(),
-                    hint = "任务结束、失败或被放弃后会出现在这里。".t(),
-                    action = { TextActionButton(text = "去创建".t(), onClick = onCreateTask) },
-                )
-            } else {
-                EmptyState(
-                    title = "该时间范围内没有任务".t(),
-                    hint = "换一个时间范围，或查看全部。".t(),
-                    action = {
-                        TextActionButton(
-                            text = "查看全部".t(),
-                            onClick = { viewModel.setFilter(HistoryFilter.ALL) },
-                        )
-                    },
-                )
-            }
+        item {
+            MimirPageHeader(
+                title = "历史".t(),
+            )
         }
-        if (current != null && current.total > 0) {
-            SectionBlock(
-                title = "已结束".t(),
-                modifier = Modifier.padding(top = MimirSpacing.md),
-                trailing = { MonoLabel(text = "${current.total} TASKS", color = colors.muted) },
-            ) {
-                current.rows.forEach { row ->
-                    HistoryRow(
-                        row = row,
-                        detail = detail,
-                        onToggle = { viewModel.toggleExpanded(row.taskId) },
-                        onOpenAudit = { onOpenAudit(row.taskId) },
-                        onOpenResult = { viewModel.openResult(row.taskId) },
-                        onRemember = {
-                            preferenceError = null
-                            pendingPreference = preferenceDraftOf(row)
+
+        item {
+            HistoryFilterRow(selected = selectedFilter, onSelect = viewModel::setFilter)
+        }
+
+        if (current != null && current.total == 0) {
+            item {
+                if (selectedFilter == HistoryFilter.ALL) {
+                    EmptyState(
+                        title = "还没有历史记录".t(),
+                        hint = "任务结束、失败或被放弃后会出现在这里。".t(),
+                        action = { TextActionButton(text = "去创建".t(), onClick = onCreateTask) },
+                    )
+                } else {
+                    EmptyState(
+                        title = "该时间范围内没有任务".t(),
+                        hint = "换一个时间范围，或查看全部。".t(),
+                        action = {
+                            TextActionButton(
+                                text = "查看全部".t(),
+                                onClick = { viewModel.setFilter(HistoryFilter.ALL) },
+                            )
                         },
-                        onRemove = { pendingRemoval = row },
                     )
                 }
             }
-            Pager(
-                page = current.page,
-                pageCount = current.pageCount,
-                onPrev = viewModel::goPrev,
-                onNext = viewModel::goNext,
-            )
+        }
+        if (current != null && current.total > 0) {
+            // 标题与行分开成 item：20 条记录不再整页一起组合/绘制，只保留可见行的开销。
+            item {
+                SectionHeader(
+                    title = "已结束".t(),
+                    modifier = Modifier.padding(top = MimirSpacing.md),
+                    trailing = { MonoLabel(text = "${current.total} TASKS", color = colors.muted) },
+                )
+            }
+            items(items = current.rows, key = { it.taskId }) { row ->
+                HistoryRow(
+                    row = row,
+                    detail = detail,
+                    onToggle = { viewModel.toggleExpanded(row.taskId) },
+                    onOpenAudit = { onOpenAudit(row.taskId) },
+                    onOpenResult = { viewModel.openResult(row.taskId) },
+                    onRemember = {
+                        preferenceError = null
+                        pendingPreference = preferenceDraftOf(row)
+                    },
+                    onRemove = { pendingRemoval = row },
+                )
+            }
+            item {
+                Pager(
+                    page = current.page,
+                    pageCount = current.pageCount,
+                    onPrev = viewModel::goPrev,
+                    onNext = viewModel::goNext,
+                )
+            }
         }
         // 统计放在列表之后并默认收起：它回答的是"这段时间整体怎么样"，
         // 而进入历史页的第一诉求通常是"看某一条任务"。收起后只留一行摘要，
@@ -167,21 +177,25 @@ fun HistoryScreen(
         // 避免"列表 2 条、统计 30 条"看起来像数据不一致。
         stats?.takeIf { selectedFilter == HistoryFilter.ALL }?.let { statistics ->
             if (statistics.finishedTasks + statistics.abortedTasks > 0) {
-                ExpandableSection(
-                    title = "运行统计".t(),
-                    modifier = Modifier.padding(top = MimirSpacing.xl),
-                    summary = "严格成功率 %1\$s · %2\$d/%3\$d 完成".t(
-                        formatRate(statistics.strictSuccessRate),
-                        statistics.doneTasks,
-                        statistics.finishedTasks,
-                    ),
-                ) {
-                    RunStatsContent(stats = statistics)
+                item {
+                    ExpandableSection(
+                        title = "运行统计".t(),
+                        modifier = Modifier.padding(top = MimirSpacing.xl),
+                        summary = "严格成功率 %1\$s · %2\$d/%3\$d 完成".t(
+                            formatRate(statistics.strictSuccessRate),
+                            statistics.doneTasks,
+                            statistics.finishedTasks,
+                        ),
+                    ) {
+                        RunStatsContent(stats = statistics)
+                    }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(MimirSpacing.huge))
+        item {
+            Spacer(modifier = Modifier.height(MimirSpacing.huge))
+        }
     }
 
     pendingRemoval?.let { row ->
@@ -309,6 +323,14 @@ private fun RunStatsContent(stats: RunStats) {
             "暂无".t()
         } else {
             stats.failureCategories.joinToString(" · ") { "${it.first} ${it.second}" }
+        },
+    )
+    KeyValueRow(
+        key = "原因码".t(),
+        value = if (stats.reasonCounts.isEmpty()) {
+            "暂无（旧任务未记录）".t()
+        } else {
+            stats.reasonCounts.take(8).joinToString(" · ") { "${it.first} ${it.second}" }
         },
     )
 }
@@ -520,6 +542,7 @@ private fun HistoryRow(
                     key = "目标应用".t(),
                     value = row.packageName.ifBlank { "—（尚未解析）".t() },
                 )
+                KeyValueRow(key = "原因码".t(), value = row.reasonCode ?: "—")
                 KeyValueRow(key = "已完成步数".t(), value = "${row.stepCount} / ${row.maxSteps}")
                 KeyValueRow(key = "模型调用".t(), value = "${row.budgetModelCalls} / ${row.maxModelCalls}")
                 KeyValueRow(

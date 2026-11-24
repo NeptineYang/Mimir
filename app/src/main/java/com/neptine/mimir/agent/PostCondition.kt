@@ -167,9 +167,9 @@ class PostCondition @Inject constructor() {
         afterElements: List<UiElement>,
     ): EffectOutcome {
         val fingerprint = action.targetFingerprint ?: return EffectOutcome.OUTCOME_UNKNOWN
-        val beforeTarget = beforeElements.firstOrNull { ElementDiff.matches(fingerprint, it) }
+        val beforeTarget = ElementDiff.findBest(fingerprint, beforeElements)
             ?: return EffectOutcome.OUTCOME_UNKNOWN
-        val afterTarget = afterElements.firstOrNull { ElementDiff.matches(fingerprint, it) }
+        val afterTarget = ElementDiff.findBest(fingerprint, afterElements)
             ?: return EffectOutcome.OUTCOME_UNKNOWN
         val beforeLabel = beforeTarget.text.ifEmpty { beforeTarget.contentDescription }
         val afterLabel = afterTarget.text.ifEmpty { afterTarget.contentDescription }

@@ -33,6 +33,7 @@ import java.util.Locale
  * @property memoryHitSteps 注入过配方的步数
  * @property timeouts 单步决策超时的次数
  * @property failureCategories 失败/受阻原因分类，按次数降序取前五
+ * @property reasonCounts 终态/转人工的原因码分布，按次数降序
  */
 data class RunStats(
     val finishedTasks: Int,
@@ -54,6 +55,7 @@ data class RunStats(
     val memoryHitSteps: Int,
     val timeouts: Int,
     val failureCategories: List<Pair<String, Int>>,
+    val reasonCounts: List<Pair<String, Int>>,
 ) {
 
     /** 严格成功率：DONE / 非放弃任务；没有样本时为 null。 */
@@ -122,6 +124,12 @@ fun computeRunStats(tasks: List<TaskEntity>, audits: List<AuditStatsRow>): RunSt
             .toList()
             .sortedByDescending { (_, count) -> count }
             .take(5),
+        // 只统计已落码的任务；旧任务 reason_code 为空，不计入分母。
+        reasonCounts = tasks.mapNotNull { it.reasonCode?.takeIf(String::isNotBlank) }
+            .groupingBy { it }
+            .eachCount()
+            .toList()
+            .sortedByDescending { (_, count) -> count },
     )
 }
 

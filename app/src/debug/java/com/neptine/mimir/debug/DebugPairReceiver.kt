@@ -16,6 +16,7 @@ import com.neptine.mimir.adblink.AdbMdns
 import com.neptine.mimir.adblink.PreferenceAdbKeyStore
 import com.neptine.mimir.device.CapabilityProbe
 import com.neptine.mimir.device.selfhost.ShellLauncher
+import com.neptine.mimir.service.AgentForegroundService
 import com.neptine.mimir.service.PrivilegeNotifier
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -75,6 +76,18 @@ class DebugPairReceiver : BroadcastReceiver() {
                     pending.finish()
                 }
             }
+            return
+        }
+
+        // action=abort 放弃指定任务，供基准集/冒烟脚本清掉 NEED_HUMAN 的保留副屏。
+        if (intent.getStringExtra("action") == "abort") {
+            val taskId = intent.getStringExtra("task_id").orEmpty()
+            if (taskId.isEmpty()) {
+                Log.e(TAG, "abort: 缺少 task_id")
+                return
+            }
+            AgentForegroundService.abort(context, taskId)
+            Log.i(TAG, "abort requested task=$taskId")
             return
         }
 

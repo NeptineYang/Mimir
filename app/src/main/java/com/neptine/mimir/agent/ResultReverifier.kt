@@ -51,6 +51,13 @@ class ResultReverifier @Inject constructor(
         handle: DisplayHandle,
         primary: ObservationSnapshot,
     ): ReachResult {
+        if (spec.packageName == BILI_PACKAGE) {
+            return if (isBiliHotTask(spec)) {
+                reachBiliHot(handle)
+            } else {
+                ReachResult(null, "B 站只注册了热门页的复验路线")
+            }
+        }
         if (spec.packageName != SETTINGS_PACKAGE) {
             return ReachResult(null, "没有为 ${spec.packageName} 注册独立复验导航")
         }
@@ -117,6 +124,84 @@ class ResultReverifier @Inject constructor(
         }
         return ReachResult(null, note)
     }
+
+    /**
+     * 功能：判断 B 站任务是否是"热门页"类
+     * 参数：spec 任务约束
+     * 返回：原话或必核字段包含「热门/排行榜」时为 true
+     *
+     * 只给这一类任务注册复验：热门是首页内的固定 tab，重新切换一次就能拿到新快照；
+     * 搜索类任务的结果页里关键词会多次出现，`requireSingleResult` 必然判不通过，
+     * 强行走复验只会把 DONE_READBACK 降成 MISMATCH。
+     */
+    private fun isBiliHotTask(spec: TaskSpec): Boolean {
+        if (spec.inputText.contains(BILI_HOT_TAB)) return true
+        if (spec.inputText.contains("排行榜")) return true
+        return spec.completionContract.requiredFields.any { it.contains(BILI_HOT_TAB) }
+    }
+
+    /**
+     * 功能：用"首页 → 热门"重新进入 B 站热门页并取新快照
+     * 参数：handle 副屏句柄
+     * 返回：复验快照与路线说明；不可达时 snapshot 为 null
+     *
+     * 任务可能停在「全站排行榜」这类二级页，那里没有底部 tab：先按返回退回带「首页」入口的
+     * 主页面，再点「首页」→「热门」。热门与首页共用 MainActivityV2，原地再点一次热门
+     * 不会重建页面，所以必须先切到首页再切回来；这条路线只做页面切换，不输入、不滚动。
+     */
+    private suspend fun reachBiliHot(handle: DisplayHandle): ReachResult {
+        val service = MimirAccessibilityService.instance
+            ?: return ReachResult(null, "无障碍服务未连接")
+        var frame: TreeFrame? = awaitFrame(handle, 0)
+        if (frame == null) return ReachResult(null, "复验前读不到 B 站控件树")
+        if (frame.packageName != BILI_PACKAGE) {
+            return ReachResult(null, "复验前前台是 ${frame.packageName}，不是 B 站")
+        }
+        var backed = 0
+        while (frame != null && !hasBiliHomeTab(frame) && backed < MAX_BACKS) {
+            apply(handle, AgentAction.Do(ActionKind.BACK, "", null))
+            delay(NAVIGATE_SETTLE_MS)
+            frame = awaitFrame(handle, 0)
+            if (frame == null || frame.packageName != BILI_PACKAGE) {
+                // 返回退到了桌面：只读拉起 App 再判断，不能把用户屏幕留在别处。
+                runCatching { transport.activities.launch(BILI_PACKAGE, handle) }
+                delay(LAUNCH_SETTLE_MS)
+                frame = awaitFrame(handle, 0)
+                if (frame == null || frame.packageName != BILI_PACKAGE) {
+                    return ReachResult(null, "按返回离开了 B 站，重新拉起后仍不在前台")
+                }
+            }
+            backed++
+        }
+        val settled = frame ?: return ReachResult(null, "复验过程中读不到 B 站控件树")
+        if (!hasBiliHomeTab(settled)) {
+            return ReachResult(null, "按返回 $MAX_BACKS 次后仍未回到 B 站带底部入口的主页面")
+        }
+        service.clickNodeOnDisplay(handle.displayId, BILI_HOME_TAB)
+        delay(TAP_SETTLE_MS)
+        if (!service.clickNodeOnDisplay(handle.displayId, BILI_HOT_TAB)) {
+            return ReachResult(null, "B 站主页面没有找到「热门」入口")
+        }
+        delay(LAUNCH_SETTLE_MS)
+
+        val fresh = awaitSnapshot(handle)
+            ?: return ReachResult(null, "已切换热门，但取不到一致观察")
+        if (fresh.packageName != BILI_PACKAGE) {
+            return ReachResult(null, "复验页落到了 ${fresh.packageName}，不是目标包")
+        }
+        Log.d(TAG, "独立复验成功（B 站热门）：${fresh.packageName}/${fresh.activityName}（返回 $backed 次）")
+        return ReachResult(fresh, "B 站热门路线：返回 $backed 次 → 首页 → 热门 → ${fresh.activityName}")
+    }
+
+    /**
+     * 功能：判断当前树里是否有 B 站底部的「首页」入口
+     * 参数：frame 当前树
+     * 返回：存在文案或描述含「首页」的元素为 true
+     */
+    private fun hasBiliHomeTab(frame: TreeFrame): Boolean =
+        frame.elements.any {
+            it.text == BILI_HOME_TAB || it.contentDescription.contains(BILI_HOME_TAB)
+        }
 
     /**
      * 功能：按初验页标题找一条系统 action 直达路线
@@ -572,6 +657,15 @@ class ResultReverifier @Inject constructor(
 
         /** 设置搜索页所在的包；按返回时会先路过它。 */
         const val SEARCH_PACKAGE = "com.google.android.settings.intelligence"
+
+        /** B 站包名：目前只注册了热门页的复验路线。 */
+        const val BILI_PACKAGE = "tv.danmaku.bili"
+
+        /** B 站首页底部的「首页」tab 文案。 */
+        const val BILI_HOME_TAB = "首页"
+
+        /** B 站首页顶部的「热门」tab 文案。 */
+        const val BILI_HOT_TAB = "热门"
 
         /** 只复验「关于手机 / 关于模拟设备」这类页面。 */
         const val ABOUT_TITLE_HINT = "关于"

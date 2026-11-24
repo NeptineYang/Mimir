@@ -25,6 +25,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.neptine.mimir.ui.component.AppField
 import com.neptine.mimir.ui.component.EmptyState
 import com.neptine.mimir.ui.component.MimirListRow
 import com.neptine.mimir.ui.component.MimirPageHeader
@@ -135,7 +136,7 @@ private fun Notice(state: CredentialUiState, onDismiss: () -> Unit) {
 private fun CredentialListRow(row: CredentialRow, onDelete: () -> Unit) {
     MimirListRow(
         title = row.accountAlias,
-        meta = row.packageName,
+        meta = row.appLabel,
         note = "普通登录密码 · 密码已加密存储 · 创建于 ${formatDate(row.createdAt)}",
         trailing = { TextActionButton(text = "删除".t(), onClick = onDelete) },
     )
@@ -163,12 +164,10 @@ private fun CredentialEditor(
                 modifier = Modifier.heightIn(max = 520.dp),
                 verticalArrangement = Arrangement.spacedBy(MimirSpacing.sm),
             ) {
-                OutlinedTextField(
-                    value = packageName,
-                    onValueChange = { packageName = it },
-                    label = { Text("应用包名".t()) },
-                    placeholder = { Text("com.example.app") },
-                    singleLine = true,
+                AppField(
+                    packageName = packageName,
+                    onPick = { packageName = it },
+                    title = "应用",
                 )
                 OutlinedTextField(
                     value = alias,

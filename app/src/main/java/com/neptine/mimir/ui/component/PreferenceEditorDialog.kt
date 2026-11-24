@@ -94,12 +94,12 @@ fun PreferenceEditorDialog(
                     placeholder = { Text("公司 / 妈妈 / VIDEO".t()) },
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = draft.scope,
-                    onValueChange = { onChange(draft.copy(scope = it)) },
-                    label = { Text("作用域包名（留空表示全局）".t()) },
-                    placeholder = { Text("com.sankuai.meituan") },
-                    singleLine = true,
+                AppField(
+                    packageName = draft.scope,
+                    onPick = { onChange(draft.copy(scope = it)) },
+                    title = "应用作用域",
+                    allowEmpty = true,
+                    emptyLabel = "全局（不限定应用）",
                 )
                 if (error != null) {
                     Text(

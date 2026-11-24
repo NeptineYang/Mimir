@@ -44,6 +44,8 @@ import com.neptine.mimir.data.memory.ProcedureTree
  * v9：新增定时任务表；到点执行走同一条任务创建链路，不复制状态机。
  * v10：任务表新增结果总结列。
  * v11：审计表新增(risk_level, decision, ts)索引，服务审计事件流筛选与分页。
+ * v12：任务表新增稳定性原因码，成功/失败/放弃/转人工统一落码；旧行为空。
+ * v13：配方表新增语言无关结构签名，用于跨语言页面匹配；旧行为空。
  */
 @Database(
     entities = [
@@ -59,7 +61,7 @@ import com.neptine.mimir.data.memory.ProcedureTree
         CapabilityEntity::class,
         ScheduledTaskEntity::class,
     ],
-    version = 11,
+    version = 13,
     exportSchema = false,
 )
 abstract class MimirDatabase : RoomDatabase() {
@@ -387,6 +389,43 @@ abstract class MimirDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_audit_risk_level_decision_ts` " +
                         "ON `audit` (`risk_level`, `decision`, `ts`)",
+                )
+            }
+        }
+
+        /**
+         * 11 → 12 迁移：任务表补稳定性原因码（v0.3.15）。
+         *
+         * 可空列，不需要 DEFAULT；旧任务读出 null，表示升级前没有记录原因码，
+         * 不参与按码统计。
+         */
+        val MIGRATION_11_12: Migration = object : Migration(11, 12) {
+            /**
+             * 功能：执行迁移
+             * 参数：db 目标版本的数据库连接
+             * 返回：无
+             */
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tasks ADD COLUMN reason_code TEXT")
+            }
+        }
+
+        /**
+         * 12 → 13 迁移：配方表补语言无关结构签名（v0.3.16）。
+         *
+         * 非空列必须给 DEFAULT，且要与实体上的 defaultValue 逐字一致；旧行读出空串，
+         * 表示升级前没有记录结构证据，跨语言匹配会跳过它们。
+         */
+        val MIGRATION_12_13: Migration = object : Migration(12, 13) {
+            /**
+             * 功能：执行迁移
+             * 参数：db 目标版本的数据库连接
+             * 返回：无
+             */
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE mem_procedure ADD COLUMN structure_signature_json " +
+                        "TEXT NOT NULL DEFAULT ''",
                 )
             }
         }

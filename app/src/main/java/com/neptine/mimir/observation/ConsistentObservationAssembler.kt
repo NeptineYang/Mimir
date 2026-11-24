@@ -31,10 +31,16 @@ class ConsistentObservationAssembler(
      *
      * 配对用布局哈希而不是含文本的结构哈希：开屏广告倒计时、轮播页码这类文本每帧都变，
      * 但元素位置没动，用结构哈希会让这类页面永远形不成一致观察，任务被直接判死。
+     *
+     * 截图清晰度取"树 A"的标签数量：这一步已经读到了当前帧结构，
+     * 不需要等到编号后再决定，也不会影响树 A/树 B 的一致性判断。
      */
     override suspend fun snapshot(handle: DisplayHandle): ObservationSnapshot {
         val before = trees.capture(handle)
-        val captured = screenshots.capture(handle)
+        // 截图清晰度按当前树的标签数量自适应：文本足够时用紧凑档，
+        // 树稀疏/纯图标时保留全尺寸，避免每一步都为"看得清"多付一倍图像 token。
+        val quality = ScreenshotQuality.forTree(before.elements)
+        val captured = screenshots.capture(handle, quality)
         val after = trees.capture(handle)
 
         if (before.layoutHash != after.layoutHash) {

@@ -114,4 +114,13 @@ data class TaskEntity(
      */
     @ColumnInfo(name = "summary")
     val summary: String? = null,
+
+    /**
+     * 稳定性原因码（v0.3.15）。
+     *
+     * 取值见 `core.contract.TaskReason`；成功、失败、放弃与转人工都会落码。
+     * 可空是为了兼容升级前的旧任务，不表示"没有原因"。
+     */
+    @ColumnInfo(name = "reason_code")
+    val reasonCode: String? = null,
 )

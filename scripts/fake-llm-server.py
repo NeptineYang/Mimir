@@ -14,6 +14,11 @@
     FAKE_REPLAN      置 1 时先发一次 replan，再按计划推进剧本走
     FAKE_STEPS       计划步数（默认 1）；>1 时生成同样多步、每步后置条件都是
                      「Android 版本」，用于跑满步数预算（如 55 步）
+    FAKE_BAD_JSON    置 1 时 Executor 返回非 JSON 文本，构造 MODEL_PARSE
+    FAKE_BAD_PLAN    置 1 时规划器返回非 JSON 文本，构造规划阶段 MODEL_PARSE
+    FAKE_STUCK_TAP   置 1 时 Executor 反复点空白坐标（可能切到别的页面，用于越界）
+    FAKE_STUCK_WAIT  置 1 时 Executor 反复 wait，构造 STUCK
+    FAKE_REPLAN_ALWAYS 置 1 时 Executor 每次都 replan，构造重规划耗尽
 
   PowerShell 示例：
     $env:FAKE_TAP_LABELS='网络和互联网,互联网,AndroidWifi,移除'
@@ -56,6 +61,13 @@ FAKE_TARGET_LABELS = [
 
 # 受限重规划剧本：第一次返回 replan，随后按计划推进剧本继续。
 FAKE_REPLAN = os.environ.get("FAKE_REPLAN", "") not in ("", "0")
+
+# 故障剧本：用于稳定性原因码 E2E。
+FAKE_BAD_JSON = os.environ.get("FAKE_BAD_JSON", "") not in ("", "0")
+FAKE_BAD_PLAN = os.environ.get("FAKE_BAD_PLAN", "") not in ("", "0")
+FAKE_STUCK_TAP = os.environ.get("FAKE_STUCK_TAP", "") not in ("", "0")
+FAKE_STUCK_WAIT = os.environ.get("FAKE_STUCK_WAIT", "") not in ("", "0")
+FAKE_REPLAN_ALWAYS = os.environ.get("FAKE_REPLAN_ALWAYS", "") not in ("", "0")
 
 # 预算步数：>1 时规划器返回最多 48 步（6 子任务 × 8 步），执行器用额外 wait
 # 把总动作数补到 N，用来验证步数预算（maxSteps）与"计划走完直接进验证"。
@@ -377,11 +389,15 @@ class Handler(BaseHTTPRequestHandler):
             }
             content = None
         elif "手机任务规划器" in system:
-            reply = {
-                "assumptions": ["目标应用可以正常启动"],
-                "subtasks": plan_subtasks(),
-            }
-            content = None
+            if FAKE_BAD_PLAN:
+                reply = None
+                content = "这不是 JSON"
+            else:
+                reply = {
+                    "assumptions": ["目标应用可以正常启动"],
+                    "subtasks": plan_subtasks(),
+                }
+                content = None
         else:
             content = None
             CALLS["executor"] += 1
@@ -392,7 +408,16 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-            if FAKE_CREDENTIAL:
+            if FAKE_BAD_JSON:
+                reply = None
+                content = "这不是 JSON"
+            elif FAKE_STUCK_TAP:
+                reply = {"action": "tap", "point": {"x": 50, "y": 50}}
+            elif FAKE_STUCK_WAIT:
+                reply = {"action": "wait", "seconds": 1}
+            elif FAKE_REPLAN_ALWAYS:
+                reply = {"action": "replan", "reason": "假后端：构造重规划耗尽"}
+            elif FAKE_CREDENTIAL:
                 reply = credential_scenario(user)
             elif FAKE_INPUT_TEXT:
                 reply = input_scenario(user)

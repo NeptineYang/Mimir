@@ -1,12 +1,15 @@
 package com.neptine.mimir.ui.viewmodel
 
 import com.neptine.mimir.ui.i18n.tStatic
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.neptine.mimir.core.contract.CredentialPurpose
 import com.neptine.mimir.core.contract.CredentialRecord
 import com.neptine.mimir.data.credential.CredentialStore
+import com.neptine.mimir.ui.appLabelOf
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,13 +36,13 @@ data class CredentialUiState(
  * 凭据列表展示行。
  *
  * @property id 凭据标识（模型只提交它）
- * @property packageName 绑定应用
+ * @property appLabel 绑定应用的桌面显示名；应用已卸载时回落包名
  * @property accountAlias 账号别名
  * @property createdAt 创建时间
  */
 data class CredentialRow(
     val id: String,
-    val packageName: String,
+    val appLabel: String,
     val accountAlias: String,
     val createdAt: Long,
 )
@@ -47,6 +50,7 @@ data class CredentialRow(
 @HiltViewModel
 class CredentialViewModel @Inject constructor(
     private val store: CredentialStore,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(CredentialUiState())
@@ -66,7 +70,7 @@ class CredentialViewModel @Inject constructor(
             val rows = runCatching { store.list() }.getOrDefault(emptyList()).map { record ->
                 CredentialRow(
                     id = record.id,
-                    packageName = record.packageName,
+                    appLabel = appLabelOf(context, record.packageName),
                     accountAlias = record.accountAlias,
                     createdAt = record.createdAt,
                 )
@@ -86,7 +90,7 @@ class CredentialViewModel @Inject constructor(
         val pkg = packageName.trim()
         val alias = accountAlias.trim()
         if (pkg.isEmpty() || !pkg.contains('.')) {
-            _state.value = _state.value.copy(error = "包名要写成完整应用 ID，例如 com.example.app".tStatic())
+            _state.value = _state.value.copy(error = "请选择要绑定的应用".tStatic())
             return
         }
         if (alias.isEmpty()) {

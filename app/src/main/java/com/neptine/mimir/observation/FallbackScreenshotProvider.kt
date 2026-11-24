@@ -27,42 +27,51 @@ import kotlinx.coroutines.withContext
  * 虚拟屏没有物理 id（DisplayInfo.address 为 null），这条路径对副屏恒失败。
  * 与其留一段永远跑不通的代码，不如在探针 P3 里如实报告"可用路径数为 2"。
  *
- * 输出统一缩放到送模型规格（默认 540×1200）：副屏按 720×1600 原生渲染，
- * 模型输入独立缩放，二者解耦（§2.2.1）。
+ * 输出统一缩放到送模型规格：树元素充足时用 360×800 紧凑档，
+ * 树稀疏或纯视觉时用 540×1200 全尺寸档（§2.2.1 / 截图策略）。
  */
 class FallbackScreenshotProvider(private val displays: DisplayPort) : ScreenshotProvider {
 
     /**
      * 功能：抓取一帧副屏画面并缩放到送模型规格
-     * 参数：handle 建屏句柄
+     * 参数：handle 建屏句柄；quality 送模型清晰度档位
      * 返回：图像帧与取帧来源；两条路径都失败时抛异常
      */
-    override suspend fun capture(handle: DisplayHandle): CapturedFrame = withContext(Dispatchers.IO) {
-        captureByPixelCopy(handle)?.let { return@withContext it }
-        captureByAccessibility(handle)?.let { return@withContext it }
+    override suspend fun capture(
+        handle: DisplayHandle,
+        quality: ScreenshotQuality,
+    ): CapturedFrame = withContext(Dispatchers.IO) {
+        captureByPixelCopy(handle, quality)?.let { return@withContext it }
+        captureByAccessibility(handle, quality)?.let { return@withContext it }
         throw IllegalStateException("取帧失败：PixelCopy 与无障碍 takeScreenshot 均未返回画面")
     }
 
     /**
      * 功能：走 PixelCopy 主路径取帧
-     * 参数：handle 建屏句柄
+     * 参数：handle 建屏句柄；quality 送模型清晰度档位
      * 返回：取帧结果；失败返回 null
      */
-    private suspend fun captureByPixelCopy(handle: DisplayHandle): CapturedFrame? = runCatching {
+    private suspend fun captureByPixelCopy(
+        handle: DisplayHandle,
+        quality: ScreenshotQuality,
+    ): CapturedFrame? = runCatching {
         val native = displays.capture(handle, CAPTURE_TIMEOUT_MS)
-        CapturedFrame(scaleToModelSize(native), CaptureSource.PIXELCOPY)
+        CapturedFrame(scaleToModelSize(native, quality), CaptureSource.PIXELCOPY)
     }.getOrNull()
 
     /**
      * 功能：走无障碍 takeScreenshot 兜底取帧
-     * 参数：handle 建屏句柄
+     * 参数：handle 建屏句柄；quality 送模型清晰度档位
      * 返回：取帧结果；无障碍未连接或系统拒绝时返回 null
      */
-    private suspend fun captureByAccessibility(handle: DisplayHandle): CapturedFrame? {
+    private suspend fun captureByAccessibility(
+        handle: DisplayHandle,
+        quality: ScreenshotQuality,
+    ): CapturedFrame? {
         val service = MimirAccessibilityService.instance ?: return null
         val bitmap = requestAccessibilityBitmap(service, handle.displayId) ?: return null
         return try {
-            CapturedFrame(scaleToModelSize(encode(bitmap)), CaptureSource.ACCESSIBILITY)
+            CapturedFrame(scaleToModelSize(encode(bitmap), quality), CaptureSource.ACCESSIBILITY)
         } finally {
             bitmap.recycle()
         }
@@ -100,13 +109,13 @@ class FallbackScreenshotProvider(private val displays: DisplayPort) : Screenshot
 
     /**
      * 功能：把原生帧缩放到送模型规格并重新编码
-     * 参数：native 原生尺寸的图像帧
+     * 参数：native 原生尺寸的图像帧；quality 目标清晰度档位
      * 返回：缩放后的图像帧；解码失败时原样返回
      */
-    private fun scaleToModelSize(native: ImageFrame): ImageFrame {
+    private fun scaleToModelSize(native: ImageFrame, quality: ScreenshotQuality): ImageFrame {
         val source = BitmapFactory.decodeByteArray(native.bytes, 0, native.bytes.size) ?: return native
         return try {
-            val scaled = Bitmap.createScaledBitmap(source, MODEL_WIDTH, MODEL_HEIGHT, true)
+            val scaled = Bitmap.createScaledBitmap(source, quality.width, quality.height, true)
             val frame = encode(scaled)
             if (scaled !== source) scaled.recycle()
             frame
@@ -129,12 +138,6 @@ class FallbackScreenshotProvider(private val displays: DisplayPort) : Screenshot
     private companion object {
         /** 单次 PixelCopy 取帧超时。 */
         const val CAPTURE_TIMEOUT_MS = 300L
-
-        /** 送模型默认宽度（§2.3.1 默认档）。 */
-        const val MODEL_WIDTH = 540
-
-        /** 送模型默认高度（与副屏 720×1600 同比例）。 */
-        const val MODEL_HEIGHT = 1200
 
         /** WebP 质量；只影响字节数，不影响视觉 token 数。 */
         const val WEBP_QUALITY = 70

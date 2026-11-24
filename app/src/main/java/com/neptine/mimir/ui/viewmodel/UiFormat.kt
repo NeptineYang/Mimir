@@ -35,6 +35,8 @@ data class TaskRow(
     val suspendReason: String?,
     /** 终态后的结果总结（v0.3.4）；旧任务或生成中为空。 */
     val summary: String?,
+    /** 稳定性原因码（v0.3.15）；旧任务为空。 */
+    val reasonCode: String?,
     /** 已执行步数。 */
     val stepCount: Int,
     /** 步数预算上限；用于展示进度分母。 */
@@ -201,6 +203,7 @@ fun TaskEntity.toRow(thumb: ImageBitmap? = null): TaskRow {
         currentSubGoal = currentSubGoal,
         suspendReason = suspendReason,
         summary = summary,
+        reasonCode = reasonCode,
         stepCount = stepCount,
         maxSteps = budget.maxSteps,
         budgetModelCalls = budgetModelCalls,

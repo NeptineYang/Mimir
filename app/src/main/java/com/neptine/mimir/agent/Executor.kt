@@ -44,6 +44,16 @@ class Executor @Inject constructor(
             ?: throw ModelUnavailableException("未配置可用的模型后端（base_url / 模型名 / API Key 缺一不可）")
 
         val payload = promptBuilder.build(request)
+        logPromptMetrics(
+            role = "executor",
+            systemChars = payload.systemPrompt.length,
+            userChars = payload.userText.length,
+            imageBytes = payload.image?.bytes?.size?.toLong() ?: 0L,
+            extra = "task=${payload.sections.taskSpec} step=${payload.sections.planStep} " +
+                "mem=${payload.sections.memories} cred=${payload.sections.credentials} " +
+                "hist=${payload.sections.history} elements=${payload.sections.elements} " +
+                "memHits=${request.memories.size} creds=${request.credentials.size}",
+        )
         val messages = buildMessages(payload)
 
         var lastError: Exception? = null

@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import com.neptine.mimir.R
 import com.neptine.mimir.agent.MemoryReverifier
 import com.neptine.mimir.agent.Orchestrator
+import com.neptine.mimir.agent.TaskRecovery
 import com.neptine.mimir.data.db.dao.TaskDao
 import com.neptine.mimir.device.ActiveDisplayRegistry
 import com.neptine.mimir.service.schedule.ScheduledTaskRunner
@@ -51,6 +52,9 @@ class AgentForegroundService : Service() {
 
     @Inject
     lateinit var scheduledTaskRunner: ScheduledTaskRunner
+
+    @Inject
+    lateinit var taskRecovery: TaskRecovery
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -99,6 +103,23 @@ class AgentForegroundService : Service() {
             }
             return START_STICKY
         }
+        if (action == ACTION_ABORT) {
+            // 放弃必须能在任务卡住时生效：交接通知的「放弃」不能排进队列锁，
+            // 否则任务停在 PLANNING/EXECUTING 时锁被占着，放弃请求永远轮不到。
+            // forceAbort 会先取消运行中的协程再落 ABORTED；未运行的任务等价于直接落库。
+            val id = taskId
+            if (id == null) {
+                stopSelfResult(startId)
+            } else {
+                scope.launch {
+                    runCatching { orchestrator.forceAbort(id) }
+                        .onFailure { android.util.Log.e("MimirAgent", "放弃任务失败 task=$id", it) }
+                    // 放弃后队列可能还有任务，按普通路径再消费一次（会重新拿队列锁并检查保留屏）。
+                    process(null, null, startId)
+                }
+            }
+            return START_STICKY
+        }
         scope.launch { process(action, taskId, startId) }
         return START_STICKY
     }
@@ -133,6 +154,11 @@ class AgentForegroundService : Service() {
      */
     private suspend fun process(action: String?, taskId: String?, startId: Int) = queueLock.withLock {
         android.util.Log.d("MimirHandoff", "服务处理动作 action=$action task=$taskId")
+        // 看门狗第一层：服务被系统停掉又拉起时，进程还活着、Application 的启动恢复不会再跑，
+        // 上一轮任务会停在 EXECUTING/PLANNING 无人推进。这里补一次收口（落 NEED_HUMAN，不续跑）。
+        // 队列锁已持有，此时不可能有任务在跑，扫描不会误伤当前任务。
+        runCatching { taskRecovery.recoverInterrupted() }
+            .onFailure { android.util.Log.e("MimirAgent", "服务启动恢复扫描失败", it) }
         when (action) {
             // 「继续」会在副屏上跑完整轮主循环，必须放进子协程：
             // Orchestrator 会把它登记为当前运行任务，任务页的强制打断据此取消它；
@@ -147,7 +173,6 @@ class AgentForegroundService : Service() {
                         }
                 }
             }
-            ACTION_ABORT -> taskId?.let { runCatching { orchestrator.abort(it) } }
             ACTION_HUMAN_VERIFY -> taskId?.let { runCatching { orchestrator.markVerifiedByHuman(it) } }
             ACTION_OPEN_MAIN -> taskId?.let { runCatching { orchestrator.handOverToMain(it) } }
             ACTION_OPEN_RESULT -> taskId?.let { runCatching { orchestrator.openResultOnMain(it) } }
@@ -185,10 +210,15 @@ class AgentForegroundService : Service() {
         while (true) {
             if (activeDisplay.isOccupied()) {
                 // 只有在"确实还有任务在排队"时才牺牲结果页；队列为空就让结果页留到超时，
-                // 用户仍有机会点通知看结果。转人工任务的屏不能收，释放函数会拒绝并返回 false。
+                // 用户仍有机会点通知看结果。
                 val waiting = runCatching { taskDao.findNextCreated() }.getOrNull() ?: break
-                if (!runCatching { orchestrator.releaseRetainedResults() }.getOrDefault(false)) break
-                android.util.Log.d("MimirAgent", "队列等待任务 ${waiting.taskId}，已释放保留结果页")
+                // 看门狗第二层：转人工保留屏超过 10 分钟无人处理就收掉，否则一条挂起任务
+                // 会把整条队列永久堵死。任务本身仍是 NEED_HUMAN，不影响用户继续或放弃。
+                val freed = runCatching { orchestrator.releaseRetainedResults() }.getOrDefault(false) ||
+                    runCatching { orchestrator.releaseStaleHumanRetained(HUMAN_RETENTION_MS) }
+                        .getOrDefault(false)
+                if (!freed) break
+                android.util.Log.d("MimirAgent", "队列等待任务 ${waiting.taskId}，已释放保留页")
             }
             val next = runCatching { taskDao.findNextCreated() }.getOrNull() ?: break
             android.util.Log.d("MimirAgent", "队列取任务 id=${next.taskId} 当前占用=${activeDisplay.isOccupied()}")
@@ -256,6 +286,10 @@ class AgentForegroundService : Service() {
          */
         fun openResult(context: Context, taskId: String) =
             launch(context, ACTION_OPEN_RESULT, taskId)
+
+        /** 转人工任务保留副屏的最长时间；超时后队列可回收这块屏继续跑后续任务。 */
+        private const val HUMAN_RETENTION_MS = 10 * 60_000L
+
         /** 保活通知渠道标识。 */
         private const val CHANNEL_ID = "mimir_agent"
 

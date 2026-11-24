@@ -70,6 +70,7 @@ class Planner @Inject constructor(
         val reply = call(
             model, SPEC_SYSTEM_PROMPT, user,
             reasoningEffort = SPEC_REASONING_EFFORT, maxTokens = SPEC_MAX_TOKENS,
+            kind = "spec", extra = "packages=${launchablePackages.size}",
         )
         val raw = reply.content
         val payload = LlmJson.extract(raw) ?: throw PlanParseException("任务解析输出不可读：${raw.take(RAW_LIMIT)}")
@@ -131,7 +132,11 @@ class Planner @Inject constructor(
             }
         }
 
-        val reply = call(requireModel(), PLAN_SYSTEM_PROMPT, user)
+        val reply = call(
+            requireModel(), PLAN_SYSTEM_PROMPT, user,
+            kind = "plan",
+            extra = "prefs=${preferences.size} elements=${firstFrame.elements.take(20).size}",
+        )
         val raw = reply.content
         val payload = LlmJson.extract(raw) ?: throw PlanParseException("计划输出不可读：${raw.take(RAW_LIMIT)}")
         return Planned(parsePlan(payload, spec, version = 1), reply.usage)
@@ -175,7 +180,12 @@ class Planner @Inject constructor(
             }
         }
 
-        val reply = call(requireModel(), REPLAN_SYSTEM_PROMPT, user)
+        val reply = call(
+            requireModel(), REPLAN_SYSTEM_PROMPT, user,
+            kind = "replan",
+            extra = "prevSteps=${previous.subtasks.sumOf { it.steps.size }} " +
+                "elements=${frame.elements.take(20).size}",
+        )
         val raw = reply.content
         val payload = LlmJson.extract(raw) ?: throw PlanParseException("重规划输出不可读：${raw.take(RAW_LIMIT)}")
         if (payload.string("give_up").isNotEmpty()) return Planned(null, reply.usage)
@@ -270,7 +280,8 @@ class Planner @Inject constructor(
 
     /**
      * 功能：发一次规划请求并取回复正文
-     * 参数：model 后端；system 系统提示；user 用户文本
+     * 参数：model 后端；system 系统提示；user 用户文本；reasoningEffort 思考档；
+     *       maxTokens 输出上限；kind 日志角色；extra 日志补充信息
      * 返回：模型回复正文与本次调用的 token 用量
      */
     private suspend fun call(
@@ -279,7 +290,10 @@ class Planner @Inject constructor(
         user: String,
         reasoningEffort: String = REASONING_EFFORT,
         maxTokens: Int = MAX_TOKENS,
+        kind: String = "",
+        extra: String = "",
     ): PlannerReply {
+        logPromptMetrics(kind, system.length, user.length, extra = extra)
         val response = llm.chat(
             baseUrl = model.baseUrl,
             apiKey = model.apiKey,

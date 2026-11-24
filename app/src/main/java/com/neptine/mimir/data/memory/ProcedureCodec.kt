@@ -60,6 +60,7 @@ object ProcedureCodec {
         pages = pages,
         postcondition = decodeStrings(entity.postconditionJson),
         pageSignature = decodeStrings(entity.pageSignatureJson),
+        structureSignature = decodeStrings(entity.structureSignatureJson),
         source = enumOrDefault(entity.source, MemorySource.USER_WRITTEN),
         status = enumOrDefault(entity.status, MemoryStatus.DISABLED),
         successCount = entity.successCount,
@@ -92,6 +93,7 @@ object ProcedureCodec {
         }.toString(),
         postconditionJson = stringsJson(procedure.postcondition),
         pageSignatureJson = stringsJson(procedure.pageSignature),
+        structureSignatureJson = stringsJson(procedure.structureSignature),
         source = procedure.source.name,
         status = procedure.status.name,
         successCount = procedure.successCount,
@@ -209,6 +211,7 @@ object ProcedureCodec {
         }
         put("postcondition", stringsJson(procedure.postcondition))
         put("pageSignature", stringsJson(procedure.pageSignature))
+        put("structureSignature", stringsJson(procedure.structureSignature))
         put("source", procedure.source.name)
         put("status", procedure.status.name)
         put("successCount", procedure.successCount)
@@ -246,6 +249,8 @@ object ProcedureCodec {
             postcondition = node["postcondition"]?.jsonArray.orEmpty()
                 .mapNotNull { it.jsonPrimitive.contentOrNull },
             pageSignature = node["pageSignature"]?.jsonArray.orEmpty()
+                .mapNotNull { it.jsonPrimitive.contentOrNull },
+            structureSignature = node["structureSignature"]?.jsonArray.orEmpty()
                 .mapNotNull { it.jsonPrimitive.contentOrNull },
             source = enumOrDefault(node.string("source"), MemorySource.USER_WRITTEN),
             status = enumOrDefault(node.string("status"), MemoryStatus.DISABLED),

@@ -17,6 +17,7 @@ import com.neptine.mimir.core.contract.PlanSubtask
 import com.neptine.mimir.core.contract.RiskLevel
 import com.neptine.mimir.core.contract.TargetFingerprint
 import com.neptine.mimir.core.contract.TaskPlan
+import com.neptine.mimir.core.contract.TaskReason
 import com.neptine.mimir.core.contract.TaskSpec
 import com.neptine.mimir.core.contract.TaskState
 import com.neptine.mimir.core.contract.allowedTransitions
@@ -242,16 +243,6 @@ class Orchestrator @Inject constructor(
     }
 
     /**
-     * 功能：用户放弃任务
-     * 参数：taskId 任务标识
-     * 返回：无
-     *
-     * CREATED 的"放弃"曾经是删除；现在统一走 ABORTED：强制打断要能在界面上解释
-     * "为什么这条任务没了"，历史页也据此留下记录，再由用户决定是否删除。
-     */
-    suspend fun abort(taskId: String) = markAborted(taskId, releaseDisplay = true)
-
-    /**
      * 功能：把任务置为 ABORTED
      * 参数：taskId 任务标识；releaseDisplay 是否顺带销毁本任务持有的副屏
      * 返回：无
@@ -269,6 +260,7 @@ class Orchestrator @Inject constructor(
             task.copy(
                 state = TaskState.ABORTED.name,
                 suspendReason = "用户放弃",
+                reasonCode = TaskReason.USER_ABORT.name,
                 updatedAt = now,
                 finishedAt = now,
             ),
@@ -602,11 +594,14 @@ class Orchestrator @Inject constructor(
 
     /**
      * 功能：生成执行期任务计划
-     * 参数：spec 任务约束；firstFrame 开局首帧
-     * 返回：任务计划；规划失败时退化为单子任务单步骤计划
+     * 参数：spec 任务约束；firstFrame 开局首帧；task 任务行快照
+     * 返回：任务计划；规划失败或超时退化为单子任务单步骤计划
      *
      * 退化而不是失败：规划器输出不可解析时，至少还能按"整句话当一步"继续执行，
      * 由动作后置条件与 Verifier 兜底，比直接判死更接近真实可用性。
+     *
+     * 必须有应用层超时：OkHttp 超时叠加重试可能拖过 8 分钟（真机实测任务一直停在 PLANNING，
+     * 期间队列锁被占、连放弃广播都排不进来）。超时走同一条退化路径。
      */
     private suspend fun buildPlan(
         spec: TaskSpec,
@@ -616,11 +611,30 @@ class Orchestrator @Inject constructor(
         // 策略只在这里注入（§2.5.6）：它改变"做什么、按什么顺序"，不属于逐步 prompt
         val preferences = runCatching { memory.retrievePreferences(spec.packageName) }
             .getOrDefault(emptyList())
-        val planned = runCatching { planner.planTask(spec, preferences, firstFrame) }.getOrNull()
-        planned?.usage?.let { usage ->
+        val planned = withTimeoutOrNull(PLAN_TIMEOUT_MS) {
+            try {
+                planner.planTask(spec, preferences, firstFrame)
+            } catch (e: CancellationException) {
+                // 超时靠取消传播，不能吞成 null，否则 withTimeoutOrNull 永远不会返回。
+                throw e
+            } catch (e: Throwable) {
+                Log.w(AGENT_TAG, "规划调用失败，退化为单步计划", e)
+                null
+            }
+        }
+        if (planned == null) {
             audit.recordSystemEvent(
-                task, outcome = "MODEL_USAGE", result = "计划生成", decision = "ALLOW", usage = usage,
+                task,
+                outcome = "PLAN_FALLBACK",
+                result = "规划失败或超过 ${PLAN_TIMEOUT_MS / 1000} 秒，已退化为单步计划",
+                decision = "ALLOW",
             )
+        } else {
+            planned.usage?.let { usage ->
+                audit.recordSystemEvent(
+                    task, outcome = "MODEL_USAGE", result = "计划生成", decision = "ALLOW", usage = usage,
+                )
+            }
         }
         return planned?.value ?: fallbackPlan(spec)
     }
@@ -1724,7 +1738,7 @@ class Orchestrator @Inject constructor(
         // 没有注册复验路线时退一步：给页面一点时间稳定，再做一次同页重读。
         // 查看类任务只读前台包名——视频/直播页永远在动，等不到"一致观察"（真机 B 站实测），
         // 用整帧快照会把一次成功判成"未复验"。
-        val viewTask = isViewTask(session.spec)
+        val viewTask = TaskNature.isViewTask(session.spec.inputText)
         // 查看类任务的初验判据是"前台包名"（在 Verifier 内决定），不是这里的字段级初验；
         // 字段级初验对这类任务本来就会因为计划期盲猜的文案失败，不能拿它当门槛。
         val needsReadback = reach.snapshot == null && (viewTask || primary.passed)
@@ -1778,7 +1792,7 @@ class Orchestrator @Inject constructor(
             // 交付页任务的交付物就是页面本身：模型已停在目标页，字段文案对不上
             // （点赞只有图标、问答标点不同、美团购物车写「已加购商品」）不该把人叫回来处理，
             // 直接交付结果页通知，让用户自己看那一页。
-            VerificationOutcome.MISMATCH -> if (isDeliveryPageTask(session.spec)) {
+            VerificationOutcome.MISMATCH -> if (TaskNature.isDeliveryPageTask(session.spec.inputText)) {
                 TaskState.COMPLETED_UNVERIFIED
             } else {
                 TaskState.NEED_HUMAN
@@ -1802,14 +1816,27 @@ class Orchestrator @Inject constructor(
             decisionOverride = if (target == TaskState.NEED_HUMAN) "NEED_HUMAN" else "ALLOW",
         )
         val terminal = terminalReason(session.spec, target, summary, result)
-        val verified = transition(verifying, target, terminal)
+        val reasonCode = when (target) {
+            TaskState.DONE -> TaskReason.DONE
+            TaskState.DONE_READBACK -> TaskReason.DONE_READBACK
+            TaskState.COMPLETED_UNVERIFIED ->
+                if (result.outcome == VerificationOutcome.MISMATCH) {
+                    TaskReason.DELIVERED_UNVERIFIED
+                } else {
+                    TaskReason.COMPLETED_UNVERIFIED
+                }
+            TaskState.NEED_HUMAN -> TaskReason.VERIFY_MISMATCH
+            else -> null
+        }
+        val verified = transition(verifying, target, terminal, reasonCode)
         session.task = verified
         // 终态之后补写结果总结；写失败不影响终态，异步作用域里自己兜底
         if (target.isTerminal) summaryWriter.schedule(verified.taskId)
 
         // 查看类/购物类任务的交付物都是"agent 停下的那一页"：视频页、对话页、购物车、
         // 待支付页。副屏先留着，等用户点结果通知时再把整个任务搬到主屏。
-        val keepResult = target != TaskState.NEED_HUMAN && isDeliveryPageTask(session.spec)
+        val keepResult = target != TaskState.NEED_HUMAN &&
+            TaskNature.isDeliveryPageTask(session.spec.inputText)
         if (keepResult) {
             resultViews.markPending(verified.taskId, session.spec.packageName)
             scheduleResultRelease(verified.taskId)
@@ -1855,11 +1882,15 @@ class Orchestrator @Inject constructor(
         result: VerificationResult,
     ): String {
         if (target == TaskState.COMPLETED_UNVERIFIED &&
-            isDeliveryPageTask(spec) &&
+            TaskNature.isDeliveryPageTask(spec.inputText) &&
             result.outcome == VerificationOutcome.MISMATCH
         ) {
             val handover = isOrderingTask(spec) && summary.contains("待支付")
             return if (handover) summary else "已停在目标页面；点击结果通知可直接打开查看"
+        }
+        if (target == TaskState.NEED_HUMAN && result.outcome == VerificationOutcome.MISMATCH) {
+            // 操作类任务没有完成证据：不再包装成"已停在目标页"，明确告诉用户需要检查。
+            return "未找到完成证据，任务已暂停；请检查当前页面后决定继续或放弃"
         }
         return result.unreachableReason ?: summary
     }
@@ -1924,41 +1955,6 @@ class Orchestrator @Inject constructor(
             resultViews.clear(taskId)
             Log.d(AGENT_TAG, "结果页保留超时，已释放副屏 task=$taskId")
         }
-    }
-
-    /**
-     * 功能：判断任务是否是"把某个页面交给用户看"
-     * 参数：spec 任务约束
-     * 返回：是查看类任务为 true
-     *
-     * 这类任务的完成物就是目标页面本身：Agent 已经停在目标页后，字段文案对不上
-     * 不应该转人工处理，而应直接交付结果页通知，让用户点开自己看。
-     */
-    private fun isViewTask(spec: TaskSpec): Boolean {
-        val text = spec.inputText.lowercase()
-        return VIEW_TASK_HINTS.any { text.contains(it) }
-    }
-
-    /**
-     * 功能：判断任务的交付物是不是"某个页面"
-     * 参数：spec 任务约束
-     * 返回：查看类或购物类为 true
-     *
-     * 这两类的共同点：用户要的是 agent 停下的那一页，而不是"任务完成"这个结论。
-     * 查看类（B 站视频、DeepSeek 对话）停在内容页；购物类（美团外卖、淘宝）停在购物车
-     * 或待支付页，剩下的动作必须由用户自己完成（支付是 L2B）。
-     *
-     * 因此它们共用同一条交付口径：完成契约的文案对不上时按"已完成未复验"交付结果页，
-     * 而不是转人工。美团实测：购物车面板写的是「已加购商品」，计划期猜的「加入购物车」
-     * 永远对不上，按旧口径会把一次成功的加购判成失败并逼用户重跑。
-     *
-     * 代价要说清：agent 若没真正加购成功，用户点通知看到的是"未复验"的页面，需要自己判断。
-     * 这个代价比"把成功判成失败"小——页面就在眼前，用户一眼能看出来。
-     */
-    private fun isDeliveryPageTask(spec: TaskSpec): Boolean {
-        if (isViewTask(spec)) return true
-        val text = spec.inputText.lowercase()
-        return DELIVERY_PAGE_HINTS.any { text.contains(it) }
     }
 
     /**
@@ -2147,6 +2143,7 @@ class Orchestrator @Inject constructor(
             task.copy(
                 state = TaskState.FAILED.name,
                 suspendReason = reason,
+                reasonCode = TaskReason.classify(TaskState.FAILED, reason).name,
                 updatedAt = System.currentTimeMillis(),
                 finishedAt = System.currentTimeMillis(),
             ),
@@ -2172,6 +2169,7 @@ class Orchestrator @Inject constructor(
             task.copy(
                 state = TaskState.NEED_HUMAN.name,
                 suspendReason = reason,
+                reasonCode = TaskReason.classify(TaskState.NEED_HUMAN, reason).name,
                 updatedAt = System.currentTimeMillis(),
             ),
         )
@@ -2529,7 +2527,7 @@ class Orchestrator @Inject constructor(
         } else {
             runCatching { trees.capture(handle) }.getOrNull()?.elements ?: return false
         }
-        val target = elements.firstOrNull { ElementDiff.matches(fingerprint, it) } ?: return false
+        val target = ElementDiff.findBest(fingerprint, elements) ?: return false
         // 纯视觉指纹没有原生像素范围，只能要求"还找得到同一个元素"
         val before = fingerprint.bounds ?: return true
         return movedWithinTolerance(before, target.bounds)
@@ -2920,18 +2918,31 @@ class Orchestrator @Inject constructor(
 
     /**
      * 功能：状态迁移并落库
-     * 参数：task 当前任务；target 目标状态；reason 挂起/失败原因
+     * 参数：task 当前任务；target 目标状态；reason 挂起/失败原因；
+     *       reasonCode 显式原因码（验证阶段按 outcome 指定，其余自动归类）
      * 返回：更新后的任务
      */
-    private suspend fun transition(task: TaskEntity, target: TaskState, reason: String? = null): TaskEntity {
+    private suspend fun transition(
+        task: TaskEntity,
+        target: TaskState,
+        reason: String? = null,
+        reasonCode: TaskReason? = null,
+    ): TaskEntity {
         val current = TaskState.valueOf(task.state)
         if (target != current && target !in allowedTransitions(current)) {
             throw IllegalStateException("非法状态迁移 ${current} → ${target}")
         }
         val now = System.currentTimeMillis()
+        // 只有终态与转人工需要原因码；中间状态不为每次重规划/恢复留下噪音码。
+        val code = reasonCode ?: if (target.isTerminal || target == TaskState.NEED_HUMAN) {
+            TaskReason.classify(target, reason)
+        } else {
+            null
+        }
         val updated = task.copy(
             state = target.name,
             suspendReason = reason ?: task.suspendReason,
+            reasonCode = code?.name ?: task.reasonCode,
             updatedAt = now,
             finishedAt = if (target.isTerminal) now else task.finishedAt,
         )
@@ -3105,10 +3116,39 @@ class Orchestrator @Inject constructor(
         if (state == TaskState.NEED_HUMAN || resultViews.isPending(taskId)) {
             // 保留副屏期间用户要看结果或接手操作，键盘不能继续被无键盘输入法占着
             runCatching { transport.ime.restore() }
+            // 只有转人工要记保留时刻：结果页由 scheduleResultRelease 独立超时释放。
+            if (state == TaskState.NEED_HUMAN) activeDisplay.markRetained()
             Log.d(AGENT_TAG, "任务结束，保留副屏 ${handle.displayId} 供人工处理/查看结果")
             return
         }
         destroyDisplay(handle)
+    }
+
+    /**
+     * 功能：释放转人工任务超时保留的副屏
+     * 参数：maxRetainedMs 允许保留的最长时间（毫秒）
+     * 返回：真的释放了为 true
+     *
+     * 转人工任务保留副屏是为了让用户看到现场；用户长时间不处理时，这块屏会把整条队列堵死。
+     * 这里只收屏、不改任务状态：任务仍是 NEED_HUMAN，用户随时可以在任务页继续或放弃。
+     */
+    suspend fun releaseStaleHumanRetained(maxRetainedMs: Long): Boolean {
+        val handle = activeDisplay.current() ?: return false
+        val owner = activeDisplay.owner() ?: return false
+        val state = runCatching { taskDao.findById(owner)?.state }.getOrNull()
+        if (state != TaskState.NEED_HUMAN.name) return false
+        val retainedFor = activeDisplay.retainedForMs()
+        if (retainedFor < maxRetainedMs) return false
+        destroyDisplay(handle)
+        resultViews.clear(owner)
+        runCatching {
+            notifier.notifySelfOnly(
+                owner,
+                "转人工画面已保留 ${retainedFor / 60_000} 分钟，副屏已释放；任务仍在待处理，可在任务页继续或放弃",
+            )
+        }
+        Log.d(AGENT_TAG, "转人工保留副屏超时，已释放 task=$owner retained=${retainedFor}ms")
+        return true
     }
 
     /**
@@ -3423,26 +3463,13 @@ class Orchestrator @Inject constructor(
         const val RESULT_RETENTION_MS = 10 * 60 * 1000L
 
         /**
-         * 查看类任务的关键词。
+         * 规划调用的应用层上限（毫秒）。
          *
-         * 命中后即使完成契约的页面文案没核对上，也按"已完成未复验"交付结果页通知，
-         * 而不是把人叫回来处理：视频页的「点赞」往往只有图标，问答标点也常与计划不同。
+         * 不能只靠 OkHttp：读超时 180 秒、整调用 240 秒，失败还会重试一次，
+         * 真机实测叠加后超过 8 分钟仍未返回，任务一直停在 PLANNING 且占着队列锁。
+         * 超时走已有的单步退化计划，任务可以继续跑。
          */
-        val VIEW_TASK_HINTS = listOf(
-            "打开", "搜索", "查找", "找", "查看", "播放", "问", "看看",
-            "open", "search", "find", "show", "view", "play", "ask",
-        )
-
-        /**
-         * 购物类任务的关键词：命中后同样保留副屏，但不放宽完成契约的核对。
-         *
-         * 只收"会把用户带到购物车/待支付页"的说法，不收泛化的"买"以外的动词，
-         * 避免把普通任务也误判成交付页面（多留一块副屏 10 分钟）。
-         */
-        val DELIVERY_PAGE_HINTS = listOf(
-            "外卖", "购物车", "加购", "下单", "点单", "点一", "买", "结算", "待支付", "去支付",
-            "order", "cart", "checkout", "waimai", "takeout",
-        )
+        const val PLAN_TIMEOUT_MS = 300_000L
 
         /**
          * 表示"停在支付/结算页"的目的地措辞。

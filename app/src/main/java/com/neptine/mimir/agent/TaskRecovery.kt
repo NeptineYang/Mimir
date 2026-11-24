@@ -1,5 +1,6 @@
 package com.neptine.mimir.agent
 
+import com.neptine.mimir.core.contract.TaskReason
 import com.neptine.mimir.core.contract.TaskState
 import com.neptine.mimir.core.contract.allowedTransitions
 import com.neptine.mimir.data.db.dao.ActionIntentDao
@@ -83,6 +84,11 @@ class TaskRecovery @Inject constructor(
         current = current.copy(
             state = TaskState.NEED_HUMAN.name,
             suspendReason = reason,
+            reasonCode = if (unresolved.isEmpty()) {
+                TaskReason.INTERRUPTED.name
+            } else {
+                TaskReason.UNRESOLVED_WRITE.name
+            },
             updatedAt = System.currentTimeMillis(),
         )
         taskDao.upsert(current)

@@ -274,6 +274,9 @@ class MemoryWriter @Inject constructor(
         entrySnapshot: ObservationSnapshot,
     ): Procedure {
         val pageSignature = MemoryParameters.signature(entrySnapshot, spec.parameters)
+        // 结构签名与文本签名取同一帧入口页：一个记"这一页写着什么"，一个记"这一页长什么样"。
+        // 后者在目标 App 换语言后仍可比较，跨语言检索靠它兜底。
+        val structureSignature = MemoryStructure.signature(entrySnapshot.elements)
         // 入口断言取入口页前几个锚点而不是只取一个：
         // 单锚点在列表页/首页很容易撞到广告位或重复文案，多个锚点一起断言才能证明"确实在这一页"。
         val precondition = pages.firstOrNull()?.actions.orEmpty()
@@ -294,6 +297,7 @@ class MemoryWriter @Inject constructor(
             },
             postcondition = spec.completionContract.requiredFields,
             pageSignature = pageSignature,
+            structureSignature = structureSignature,
             source = MemorySource.AUTO,
             status = MemoryStatus.CANDIDATE,
             successCount = 0,

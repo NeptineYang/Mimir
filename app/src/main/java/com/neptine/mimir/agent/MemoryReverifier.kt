@@ -13,6 +13,7 @@ import com.neptine.mimir.data.db.dao.TaskDao
 import com.neptine.mimir.data.db.entity.ProcedureEntity
 import com.neptine.mimir.data.memory.MemoryAnchorAssertions
 import com.neptine.mimir.data.memory.MemoryParameters
+import com.neptine.mimir.data.memory.MemoryStructure
 import com.neptine.mimir.data.memory.ProcedureCodec
 import com.neptine.mimir.data.memory.ProcedureTree
 import com.neptine.mimir.device.ActiveDisplayRegistry
@@ -177,7 +178,7 @@ class MemoryReverifier @Inject constructor(
             val firstCheck = check(procedure, values, first.elements)
             if (firstCheck.passed == true) {
                 val detail = "核对通过：${firstCheck.detail}（${first.source}）"
-                markVerified(entity, procedure)
+                markVerified(entity, MemoryStructure.signature(first.elements))
                 Log.d(TAG, "配方「${procedure.title}」$detail")
                 return ReverifyResult(procedureId, ReverifyVerdict.PASSED, detail)
             }
@@ -193,7 +194,7 @@ class MemoryReverifier @Inject constructor(
             val secondCheck = check(procedure, values, second.elements)
             if (secondCheck.passed == true) {
                 val detail = "首次未匹配（${firstCheck.detail}），复核一次通过：${secondCheck.detail}（${second.source}）"
-                markVerified(entity, procedure)
+                markVerified(entity, MemoryStructure.signature(second.elements))
                 Log.d(TAG, "配方「${procedure.title}」$detail")
                 return ReverifyResult(procedureId, ReverifyVerdict.PASSED, detail)
             }
@@ -227,12 +228,30 @@ class MemoryReverifier @Inject constructor(
         if (procedure.pageSignature.isNotEmpty()) {
             val actual = signatureTexts(elements, values)
             val similarity = similarityOf(procedure.pageSignature, actual)
-            val note = "签名相似度 ${(similarity * 100).toInt()}%"
-            return if (similarity >= MIN_SIGNATURE_SIMILARITY) {
-                PageCheck(true, "${anchors.detail}；$note")
-            } else {
-                PageCheck(false, "${anchors.detail}；$note 低于 ${(MIN_SIGNATURE_SIMILARITY * 100).toInt()}%")
+            if (similarity >= MIN_SIGNATURE_SIMILARITY) {
+                return PageCheck(true, "${anchors.detail}；签名相似度 ${(similarity * 100).toInt()}%")
             }
+            // 跨语言兜底与检索同一口径：只有语言确实不一致时才看结构签名，
+            // 且必须有共享资源 ID，避免只靠控件类名把不同页面判成同一页。
+            val structure = MemoryStructure.signature(elements)
+            val structureSimilarity = MemoryStructure.similarity(procedure.structureSignature, structure)
+            val usedStructure = MemoryStructure.languageMismatch(procedure.pageSignature, actual) &&
+                procedure.structureSignature.isNotEmpty() &&
+                structureSimilarity >= MemoryStructure.MIN_SIMILARITY &&
+                MemoryStructure.sharedResourceIdCount(procedure.structureSignature, structure) >=
+                MemoryStructure.MIN_SHARED_RESOURCE_IDS
+            if (usedStructure) {
+                return PageCheck(
+                    true,
+                    "${anchors.detail}；页面语言不一致，结构签名相似度 " +
+                        "${(structureSimilarity * 100).toInt()}%",
+                )
+            }
+            return PageCheck(
+                false,
+                "${anchors.detail}；签名相似度 ${(similarity * 100).toInt()}% " +
+                    "低于 ${(MIN_SIGNATURE_SIMILARITY * 100).toInt()}%",
+            )
         }
 
         if (anchors.passed) {
@@ -324,25 +343,36 @@ class MemoryReverifier @Inject constructor(
     }
 
     /**
-     * 功能：重验通过后更新验证时间与置信度
-     * 参数：entity 原配方行；procedure 配方
+     * 功能：重验通过后更新验证时间与置信度，并给旧配方补结构签名
+     * 参数：entity 原配方行；structure 本次核对页面的结构签名
      * 返回：无
      *
-     * 只改这三个派生字段；锚点、步骤、签名、版本一个都不动。
+     * 只改这几个派生字段；锚点、步骤、签名内容一个都不动。
      * STALE 配方通过后恢复 ACTIVE：重新核对正是它唯一允许的恢复方式。
+     * 旧配方没有结构签名时顺手补上——换语言后的检索要靠它，不能等下一次任务成功。
      */
-    private suspend fun markVerified(entity: ProcedureEntity, procedure: Procedure) {
-        val confidence = if (procedure.source == MemorySource.USER_WRITTEN) {
+    private suspend fun markVerified(entity: ProcedureEntity, structure: List<String>) {
+        val confidence = if (entity.source == MemorySource.USER_WRITTEN.name) {
             1.0
         } else {
-            laplace(procedure.successCount, procedure.failCount)
+            laplace(entity.successCount, entity.failCount)
         }
-        val status = if (procedure.status == MemoryStatus.STALE) MemoryStatus.ACTIVE else procedure.status
+        val status = if (entity.status == MemoryStatus.STALE.name) {
+            MemoryStatus.ACTIVE.name
+        } else {
+            entity.status
+        }
+        val structureJson = if (entity.structureSignatureJson.isBlank() && structure.isNotEmpty()) {
+            ProcedureCodec.encodeStringsForTree(structure)
+        } else {
+            entity.structureSignatureJson
+        }
         memoryDao.upsertProcedure(
             entity.copy(
-                status = status.name,
+                status = status,
                 confidence = confidence,
                 lastVerifiedAt = System.currentTimeMillis(),
+                structureSignatureJson = structureJson,
             ),
         )
     }

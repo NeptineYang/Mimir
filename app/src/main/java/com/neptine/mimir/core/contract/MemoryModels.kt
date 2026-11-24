@@ -99,6 +99,7 @@ data class ProcedurePage(
  * @property pages 配方树：页面 → 动作；App 与任务是本对象的字段，构成四层
  * @property postcondition 后置条件描述
  * @property pageSignature 规范化静态文本集合，用于结构相似度比较
+ * @property structureSignature 语言无关的结构签名（资源 ID / 控件类名 + 标志），用于跨语言页面匹配
  * @property source 来源
  * @property status 状态
  * @property successCount 成功次数（只统计不同 task_id 的独立验证）
@@ -120,6 +121,12 @@ data class Procedure(
     val pages: List<ProcedurePage>,
     val postcondition: List<String>,
     val pageSignature: List<String>,
+    /**
+     * 语言无关的结构签名：资源 ID，或"类名 + 可点击/可编辑"。
+     *
+     * 只在页面文本签名因语言切换而不可比时作为第二判据；为空表示该页没有可用结构证据。
+     */
+    val structureSignature: List<String> = emptyList(),
     val source: MemorySource,
     val status: MemoryStatus,
     val successCount: Int,

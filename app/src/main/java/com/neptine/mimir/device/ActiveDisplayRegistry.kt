@@ -1,5 +1,6 @@
 package com.neptine.mimir.device
 
+import android.os.SystemClock
 import com.neptine.mimir.core.contract.DisplayHandle
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,6 +30,15 @@ class ActiveDisplayRegistry @Inject constructor() {
     private var ownerTaskId: String? = null
 
     /**
+     * 副屏转入人工保留的时刻（`elapsedRealtime`）；0 表示不在保留态。
+     *
+     * 只由转人工任务标记：结果页有独立的保留超时（`scheduleResultRelease`），
+     * 两种保留混用会把正在给用户看的结果页提前收掉。
+     */
+    @Volatile
+    private var retainedAtMs: Long = 0L
+
+    /**
      * 功能：登记当前活动副屏及其归属任务
      * 参数：handle 建屏句柄；taskId 归属任务标识
      * 返回：无
@@ -36,6 +46,7 @@ class ActiveDisplayRegistry @Inject constructor() {
     fun bind(handle: DisplayHandle, taskId: String) {
         this.handle = handle
         this.ownerTaskId = taskId
+        retainedAtMs = 0L
     }
 
     /**
@@ -63,6 +74,25 @@ class ActiveDisplayRegistry @Inject constructor() {
     fun owner(): String? = ownerTaskId
 
     /**
+     * 功能：标记副屏转入人工保留态
+     * 参数：无
+     * 返回：无
+     *
+     * 由转人工任务的收尾调用；看门狗据此判断保留是否超时。
+     */
+    fun markRetained() {
+        retainedAtMs = SystemClock.elapsedRealtime()
+    }
+
+    /**
+     * 功能：读取副屏已保留的时长
+     * 参数：无
+     * 返回：毫秒；不在保留态时返回 0
+     */
+    fun retainedForMs(): Long =
+        if (retainedAtMs == 0L) 0L else SystemClock.elapsedRealtime() - retainedAtMs
+
+    /**
      * 功能：取出活动副屏并清空登记
      * 参数：无
      * 返回：被取出的句柄；没有时为 null
@@ -73,6 +103,7 @@ class ActiveDisplayRegistry @Inject constructor() {
         val taken = handle
         handle = null
         ownerTaskId = null
+        retainedAtMs = 0L
         return taken
     }
 
@@ -89,6 +120,7 @@ class ActiveDisplayRegistry @Inject constructor() {
         ) {
             this.handle = null
             ownerTaskId = null
+            retainedAtMs = 0L
         }
     }
 

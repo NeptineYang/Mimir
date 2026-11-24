@@ -29,6 +29,26 @@ fun SectionBlock(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
+        SectionHeader(title = title, trailing = trailing)
+        content()
+    }
+}
+
+/**
+ * 功能：渲染分节标题（顶部分隔细线 + 标题行）
+ * 参数：title 节标题；modifier 修饰符；trailing 标题右侧操作
+ * 返回：无
+ *
+ * 单独暴露给 LazyColumn 使用：列表页要把标题作为 item、正文行作为 items 分开组合，
+ * 不能再套一层 Column；视觉与 [SectionBlock] 完全一致。
+ */
+@Composable
+fun SectionHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
         MimirHairline()
         Row(
             modifier = Modifier
@@ -46,6 +66,5 @@ fun SectionBlock(
                 trailing()
             }
         }
-        content()
     }
 }

@@ -19,7 +19,7 @@ import kotlin.math.pow
  * 五步固定顺序，和文档一一对应：
  * 1. 取当前包名、任务类型与页面文本；
  * 2. 过滤 `ACTIVE`、任务类型匹配、A5 兜底锚点未过期；
- * 3. 算页面签名相似度并断言入口前置条件，不匹配的**不进入候选**；
+ * 3. 判入口页：有页面签名时按签名相似度，没有签名时才要求锚点全部命中（与立即重验同一口径）；
  * 4. 有效置信度按"存储值 × 版本系数 × 时间衰减"计算；
  * 5. 取 top-2。
  *
@@ -52,6 +52,7 @@ class RoomMemoryRetriever @Inject constructor(
 
         val now = System.currentTimeMillis()
         val currentTexts = pageTexts(snapshot, parameters)
+        val currentStructure = MemoryStructure.signature(snapshot.elements)
         val versionCode = versions.versionCodeOf(snapshot.packageName)
 
         return candidates.mapNotNull { entity ->
@@ -59,15 +60,35 @@ class RoomMemoryRetriever @Inject constructor(
             if (!isUsable(stored, now)) return@mapNotNull null
             val procedure = MemoryParameters.resolved(stored, parameters)
             val similarity = signatureSimilarity(stored.pageSignature, currentTexts)
-            if (stored.pageSignature.isNotEmpty() && similarity < MIN_SIGNATURE_SIMILARITY) {
-                return@mapNotNull null
+            val hasSignature = stored.pageSignature.isNotEmpty()
+            var structureSimilarity = 0.0
+            var usedStructure = false
+            if (hasSignature && similarity < MIN_SIGNATURE_SIMILARITY) {
+                // 文本签名不可比时，只有"语言确实不同"才启用结构签名：
+                // 同语言下签名掉到阈值以下说明页面真的变了，不能用结构相似放行。
+                structureSimilarity = MemoryStructure.similarity(
+                    stored.structureSignature,
+                    currentStructure,
+                )
+                usedStructure = MemoryStructure.languageMismatch(stored.pageSignature, currentTexts) &&
+                    stored.structureSignature.isNotEmpty() &&
+                    structureSimilarity >= MemoryStructure.MIN_SIMILARITY &&
+                    MemoryStructure.sharedResourceIdCount(
+                        stored.structureSignature,
+                        currentStructure,
+                    ) >= MemoryStructure.MIN_SHARED_RESOURCE_IDS
+                if (!usedStructure) return@mapNotNull null
             }
             val anchors = MemoryAnchorAssertions.assert(procedure.precondition, snapshot.elements)
-            if (!anchors.passed) return@mapNotNull null
+            // 与立即重验同一口径：入口锚点常来自更深页面（AUTO 配方分页误差），
+            // 不能让它一票否决一个签名强匹配的配方。只有"没有签名"时才只认锚点。
+            if (!hasSignature && !anchors.passed) return@mapNotNull null
             MemoryHit(
                 procedure = procedure,
-                confidence = effectiveConfidence(stored, versionCode, now),
-                assertion = anchors.detail + signatureNote(stored, similarity),
+                confidence = effectiveConfidence(stored, versionCode, now) *
+                    if (usedStructure) LANGUAGE_MISMATCH_FACTOR else 1.0,
+                assertion = anchors.detail +
+                    signatureNote(stored, similarity, usedStructure, structureSimilarity),
             )
         }
             .sortedByDescending { it.confidence }
@@ -160,15 +181,20 @@ class RoomMemoryRetriever @Inject constructor(
 
     /**
      * 功能：生成页面签名的断言说明
-     * 参数：procedure 配方；similarity 刚算出的相似度
+     * 参数：procedure 配方；similarity 文本签名相似度；
+     *       usedStructure 是否走了跨语言结构签名；structureSimilarity 结构签名相似度
      * 返回：一句话；配方没记录签名时说明"只按锚点断言"
      */
-    private fun signatureNote(procedure: Procedure, similarity: Double): String =
-        if (procedure.pageSignature.isEmpty()) {
-            "；无页面签名，只按锚点断言"
-        } else {
-            "；签名相似度 ${(similarity * 100).toInt()}%"
-        }
+    private fun signatureNote(
+        procedure: Procedure,
+        similarity: Double,
+        usedStructure: Boolean,
+        structureSimilarity: Double,
+    ): String = when {
+        usedStructure -> "；页面语言不一致，结构签名相似度 ${(structureSimilarity * 100).toInt()}%（已降权）"
+        procedure.pageSignature.isEmpty() -> "；无页面签名，只按锚点断言"
+        else -> "；签名相似度 ${(similarity * 100).toInt()}%"
+    }
 
     /**
      * 功能：取当前页面的可见文本集合
@@ -203,6 +229,9 @@ class RoomMemoryRetriever @Inject constructor(
 
         /** 页面签名相似度阈值；低于它说明页面结构已经变了（§2.5.4）。 */
         const val MIN_SIGNATURE_SIMILARITY = 0.60
+
+        /** 跨语言结构签名命中后的降权系数：只有结构证据，可信度低于同语言文本签名。 */
+        const val LANGUAGE_MISMATCH_FACTOR = 0.6
 
         /** App 版本不一致时的降权系数（§2.5.4）。 */
         const val VERSION_MISMATCH_FACTOR = 0.3

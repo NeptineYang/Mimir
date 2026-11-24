@@ -60,6 +60,15 @@ data class ProcedureEntity(
     @ColumnInfo(name = "page_signature_json")
     val pageSignatureJson: String,
 
+    /**
+     * 语言无关的结构签名（JSON 数组，v0.3.16）。
+     *
+     * 资源 ID 或"类名 + 标志"的计数序列；页面文本因语言切换不可比时用它做第二判据。
+     * 旧行为空，表示升级前没有记录结构证据。
+     */
+    @ColumnInfo(name = "structure_signature_json", defaultValue = "''")
+    val structureSignatureJson: String = "",
+
     /** 来源：AUTO / USER_WRITTEN / USER_TAUGHT。 */
     @ColumnInfo(name = "source")
     val source: String,

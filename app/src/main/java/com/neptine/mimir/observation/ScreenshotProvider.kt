@@ -15,10 +15,13 @@ interface ScreenshotProvider {
 
     /**
      * 功能：抓取一帧副屏画面并缩放为送模型规格
-     * 参数：handle 建屏句柄
+     * 参数：handle 建屏句柄；quality 送模型清晰度档位
      * 返回：图像帧与取帧来源
      */
-    suspend fun capture(handle: DisplayHandle): CapturedFrame
+    suspend fun capture(
+        handle: DisplayHandle,
+        quality: ScreenshotQuality = ScreenshotQuality.FULL,
+    ): CapturedFrame
 }
 
 /**

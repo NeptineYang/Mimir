@@ -33,6 +33,7 @@ import com.neptine.mimir.core.contract.AnchorLevel
 import com.neptine.mimir.core.contract.PreferenceCategory
 import com.neptine.mimir.core.contract.ProcedureAction
 import com.neptine.mimir.core.contract.ProcedurePage
+import com.neptine.mimir.ui.component.AppField
 import com.neptine.mimir.ui.component.EmptyState
 import com.neptine.mimir.ui.component.MimirHairline
 import com.neptine.mimir.ui.component.MimirListRow
@@ -225,7 +226,7 @@ private fun ProcedureListRow(
     val attempts = row.successCount + row.failCount
     MimirListRow(
         title = row.title,
-        meta = "${row.packageName} · ${row.taskType}",
+        meta = "${row.appLabel} · ${row.taskType}",
         note = "${row.status} · ${row.source} · ${row.pageCount} 页 / ${row.actionCount} 动作 · " +
             "置信度 ${String.format(java.util.Locale.US, "%.2f", row.confidence)} · " +
             if (attempts == 0) "尚未验证".t() else "成功 ${row.successCount}/$attempts",
@@ -266,7 +267,7 @@ private fun PreferenceListRow(
     val colors = LocalMimirColors.current
     MimirListRow(
         title = row.title,
-        meta = "${row.category.label()} · ${row.scope} · ${row.source} · " +
+        meta = "${row.category.label()} · ${row.scopeLabel} · ${row.source} · " +
             "置信度 ${String.format(java.util.Locale.US, "%.2f", row.confidence)} · ${row.status}",
         note = row.content,
         onClick = onEdit,
@@ -324,12 +325,10 @@ private fun ProcedureEditor(
                     placeholder = { Text("领取外卖红包".t()) },
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = draft.packageName,
-                    onValueChange = { onChange(draft.copy(packageName = it)) },
-                    label = { Text("包名".t()) },
-                    placeholder = { Text("com.sankuai.meituan") },
-                    singleLine = true,
+                AppField(
+                    packageName = draft.packageName,
+                    onPick = { onChange(draft.copy(packageName = it)) },
+                    title = "应用",
                 )
                 OutlinedTextField(
                     value = draft.taskType,

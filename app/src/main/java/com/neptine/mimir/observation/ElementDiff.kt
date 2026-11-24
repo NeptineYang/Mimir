@@ -1,5 +1,6 @@
 package com.neptine.mimir.observation
 
+import com.neptine.mimir.core.contract.Bounds
 import com.neptine.mimir.core.contract.TargetFingerprint
 import com.neptine.mimir.core.contract.UiElement
 
@@ -149,6 +150,41 @@ data class ElementDiff(
             val dx = before.center.x - element.bounds.center.x
             val dy = before.center.y - element.bounds.center.y
             return dx * dx + dy * dy <= MOVE_TOLERANCE_PX * MOVE_TOLERANCE_PX
+        }
+
+        /**
+         * 功能：在元素表中找指纹对应的最佳元素
+         * 参数：fingerprint 目标指纹；elements 当前帧元素
+         * 返回：最佳匹配；没有同类同标识元素时为 null
+         *
+         * 混淆后的资源 ID 会大量复用（小红书同一 `0_resource_name_obfuscated`
+         * 出现在多个按钮上），只取第一个会把位置不同的同名控件当成目标，
+         * 注入前复核就会误判"页面已变"。这里先用文案收敛，再取离决策时
+         * bounds 最近的候选；没有 bounds 时才退回第一个。
+         */
+        fun findBest(fingerprint: TargetFingerprint, elements: List<UiElement>): UiElement? {
+            val candidates = elements.filter { matches(fingerprint, it) }
+            if (candidates.isEmpty()) return null
+            val before = fingerprint.bounds ?: return candidates.first()
+            val label = fingerprint.text ?: fingerprint.contentDescription
+            val preferred = if (!label.isNullOrEmpty()) {
+                candidates.filter { it.text == label || it.contentDescription == label }
+                    .ifEmpty { candidates }
+            } else {
+                candidates
+            }
+            return preferred.minByOrNull { distanceOf(before, it.bounds) }
+        }
+
+        /**
+         * 功能：计算两个范围中心点的距离
+         * 参数：before 前一帧范围；after 后一帧范围
+         * 返回：像素距离
+         */
+        private fun distanceOf(before: Bounds, after: Bounds): Double {
+            val dx = before.center.x - after.center.x
+            val dy = before.center.y - after.center.y
+            return kotlin.math.sqrt((dx * dx + dy * dy).toDouble())
         }
     }
 }

@@ -25,6 +25,7 @@ import com.neptine.mimir.data.db.entity.ProcedurePageEntity
 import com.neptine.mimir.data.memory.ProcedureCodec
 import com.neptine.mimir.data.memory.ProcedureTree
 import com.neptine.mimir.service.AgentForegroundService
+import com.neptine.mimir.ui.appLabelOf
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
@@ -43,7 +44,8 @@ import kotlinx.coroutines.launch
 data class ProcedureRow(
     val id: String,
     val title: String,
-    val packageName: String,
+    /** 目标应用的桌面显示名；应用已卸载时回落包名。 */
+    val appLabel: String,
     val taskType: String,
     val status: String,
     val source: String,
@@ -70,7 +72,8 @@ data class PreferenceRow(
     val category: PreferenceCategory,
     val subject: String?,
     val title: String,
-    val scope: String,
+    /** 作用域的展示文本：全局，或作用域应用的桌面显示名。 */
+    val scopeLabel: String,
     val content: String,
     val value: String,
     val confidence: Double,
@@ -198,8 +201,8 @@ class MemoryViewModel @Inject constructor(
         errorFlow,
     ) { rows, preferences, draft, message, error ->
         MemoryUiState(
-            procedures = rows.map { it.toRow() },
-            preferences = preferences.map { it.toRow() },
+            procedures = rows.map { it.toRow { pkg -> appLabelOf(context, pkg) } },
+            preferences = preferences.map { it.toRow { pkg -> appLabelOf(context, pkg) } },
             draft = draft,
             message = message,
             error = error,
@@ -284,7 +287,7 @@ class MemoryViewModel @Inject constructor(
     fun saveDraft() {
         val draft = draftFlow.value ?: return
         if (draft.title.isBlank() || draft.packageName.isBlank()) {
-            errorFlow.value = "标题与包名不能为空".tStatic()
+            errorFlow.value = "标题与应用不能为空".tStatic()
             return
         }
         viewModelScope.launch {
@@ -306,6 +309,9 @@ class MemoryViewModel @Inject constructor(
                 pages = draft.pages,
                 postcondition = draft.postcondition.lines().map(String::trim).filter(String::isNotEmpty),
                 pageSignature = draft.signature.lines().map(String::trim).filter(String::isNotEmpty),
+                // 结构签名不在界面展示，编辑其它字段时必须原样带回，否则会被保存动作抹掉。
+                structureSignature = existing?.structureSignatureJson
+                    ?.let(ProcedureCodec::decodeStringsForTree).orEmpty(),
                 source = source,
                 status = existing?.let { runCatching { MemoryStatus.valueOf(it.status) }.getOrNull() }
                     ?: MemoryStatus.ACTIVE,
@@ -685,15 +691,15 @@ private data class ProcedureWithTree(
 
 /**
  * 功能：把配方行与其树转成展示模型
- * 参数：无（扩展函数）
+ * 参数：labelOf 包名到软件名的解析函数
  * 返回：ProcedureRow
  */
-private fun ProcedureWithTree.toRow(): ProcedureRow {
+private fun ProcedureWithTree.toRow(labelOf: (String) -> String): ProcedureRow {
     val procedure = ProcedureCodec.fromEntity(entity, pages)
     return ProcedureRow(
         id = entity.id,
         title = entity.title,
-        packageName = entity.packageName,
+        appLabel = labelOf(entity.packageName),
         taskType = entity.taskType,
         status = entity.status,
         source = entity.source,
@@ -710,16 +716,16 @@ private fun ProcedureWithTree.toRow(): ProcedureRow {
 
 /**
  * 功能：把策略行转成展示模型
- * 参数：无（扩展函数）
+ * 参数：labelOf 包名到软件名的解析函数
  * 返回：PreferenceRow
  */
-private fun PreferenceEntity.toRow(): PreferenceRow = PreferenceRow(
+private fun PreferenceEntity.toRow(labelOf: (String) -> String): PreferenceRow = PreferenceRow(
     id = id,
     category = runCatching { PreferenceCategory.valueOf(category) }
         .getOrDefault(PreferenceCategory.GENERAL),
     subject = subject,
     title = title,
-    scope = scope ?: "全局",
+    scopeLabel = scope?.takeIf { it.isNotBlank() }?.let(labelOf) ?: "全局",
     content = content,
     value = value,
     confidence = confidence,

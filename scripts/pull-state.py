@@ -148,7 +148,8 @@ def main() -> None:
         tasks = list(
             conn.execute(
                 "select task_id, created_at, state, step_count, budget_model_calls, "
-                "suspend_reason, package_name from tasks order by created_at desc limit 10"
+                "suspend_reason, package_name, reason_code "
+                "from tasks order by created_at desc limit 10"
             )
         )
     except sqlite3.Error as error:
@@ -164,8 +165,25 @@ def main() -> None:
             f"steps={row[3]}",
             f"models={row[4]}",
             f"pkg={row[6] or '-'}",
+            f"code={row[7] or '-'}",
             f"| {row[5] or ''}",
         )
+
+    print("\n原因码分布")
+    try:
+        reason_rows = list(
+            conn.execute(
+                "select reason_code, count(*) from tasks "
+                "where reason_code is not null and reason_code <> '' "
+                "group by reason_code order by count(*) desc"
+            )
+        )
+    except sqlite3.Error as error:
+        sys.exit(f"读取原因码失败：{error}")
+    if not reason_rows:
+        print("  （空：旧任务未记录原因码）")
+    for code, count in reason_rows:
+        print(f"  {code} {count}")
 
     newest = tasks[0][0]
     print_usage(conn, newest)
